@@ -4,8 +4,9 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -15,6 +16,7 @@ from app.models import PropertyType, SearchFilters, SortBy
 from app.services.search import run_search
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+log = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -55,8 +57,47 @@ def _opt_float(v: str | None) -> float | None:
 async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         "index.html",
-        {"request": request, "property_types": list(PropertyType), "sort_options": list(SortBy)},
+        {
+            "request": request,
+            "property_types": list(PropertyType),
+            "sort_options": list(SortBy),
+            "google_maps_api_key": settings.google_maps_api_key,
+        },
     )
+
+
+PLACES_AUTOCOMPLETE_URL = "https://places.googleapis.com/v1/places:autocomplete"
+# Bias suggestions toward Edmonton (downtown center, ~50km radius).
+_EDMONTON_BIAS = {
+    "circle": {"center": {"latitude": 53.5461, "longitude": -113.4938}, "radius": 50000.0}
+}
+
+
+@app.get("/api/places/autocomplete")
+async def places_autocomplete(q: str = "") -> JSONResponse:
+    """Proxy to Places API (New) so the key stays server-side. Returns plain
+    suggestion strings; failures degrade to an empty list (the input still works)."""
+    q = q.strip()
+    if len(q) < 3 or not settings.google_maps_api_key:
+        return JSONResponse({"suggestions": []})
+    payload = {"input": q, "includedRegionCodes": ["ca"], "locationBias": _EDMONTON_BIAS}
+    headers = {
+        "X-Goog-Api-Key": settings.google_maps_api_key,
+        "X-Goog-FieldMask": "suggestions.placePrediction.text.text",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.post(PLACES_AUTOCOMPLETE_URL, json=payload, headers=headers)
+        data = r.json()
+    except Exception as e:
+        log.warning("places autocomplete failed: %s", e)
+        return JSONResponse({"suggestions": []})
+    suggestions = [
+        s["placePrediction"]["text"]["text"]
+        for s in data.get("suggestions", [])
+        if s.get("placePrediction", {}).get("text", {}).get("text")
+    ]
+    return JSONResponse({"suggestions": suggestions})
 
 
 @app.post("/search", response_class=HTMLResponse)

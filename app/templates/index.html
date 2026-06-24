@@ -61,9 +61,10 @@
   <section class="border-t border-slate-200 pt-4">
     <h2 class="text-sm font-medium text-slate-700 mb-3">Commute filter (optional)</h2>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <label class="block md:col-span-1">
+      <label class="block md:col-span-1 relative">
         <span class="text-sm text-slate-600">Commute to</span>
-        <input type="text" name="transit_target" placeholder="e.g. University of Alberta" class="mt-1 w-full rounded-md border-slate-300 shadow-sm focus:ring focus:ring-blue-200" />
+        <input type="text" name="transit_target" autocomplete="off" placeholder="e.g. University of Alberta" class="mt-1 w-full rounded-md border-slate-300 shadow-sm focus:ring focus:ring-blue-200" />
+        <div id="acDropdown" class="absolute left-0 right-0 z-40 mt-1 bg-white border border-slate-200 rounded-md shadow-lg hidden overflow-hidden"></div>
       </label>
       <label class="block">
         <span class="text-sm text-slate-600">Max minutes</span>
@@ -101,4 +102,62 @@
     <p class="mt-1 text-slate-500 text-sm">RentFaster · Rentals.ca · Zumper</p>
   </div>
 </div>
+
+<script>
+(function () {
+  const input = document.querySelector('input[name="transit_target"]');
+  const box = document.getElementById('acDropdown');
+  if (!input || !box) return;
+
+  let timer = null, items = [], active = -1;
+
+  function hide() { box.classList.add('hidden'); box.innerHTML = ''; items = []; active = -1; }
+
+  function render(list) {
+    items = list;
+    if (!list.length) { hide(); return; }
+    box.innerHTML = list.map((s, i) =>
+      `<div class="ac-item px-3 py-2 text-sm cursor-pointer hover:bg-slate-100" data-i="${i}">${
+        s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))
+      }</div>`).join('');
+    box.classList.remove('hidden');
+  }
+
+  function highlight(els) { els.forEach((el, i) => el.classList.toggle('bg-slate-100', i === active)); }
+
+  async function query(q) {
+    try {
+      const r = await fetch('/api/places/autocomplete?q=' + encodeURIComponent(q));
+      render((await r.json()).suggestions || []);
+    } catch (e) { hide(); }
+  }
+
+  input.addEventListener('input', () => {
+    const q = input.value.trim();
+    clearTimeout(timer);
+    if (q.length < 3) { hide(); return; }
+    timer = setTimeout(() => query(q), 250);
+  });
+
+  // mousedown (not click) so the selection registers before the input's blur fires.
+  box.addEventListener('mousedown', (e) => {
+    const it = e.target.closest('.ac-item');
+    if (!it) return;
+    e.preventDefault();
+    input.value = items[parseInt(it.dataset.i, 10)];
+    hide();
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (box.classList.contains('hidden')) return;
+    const els = box.querySelectorAll('.ac-item');
+    if (e.key === 'ArrowDown') { active = Math.min(active + 1, els.length - 1); e.preventDefault(); highlight(els); }
+    else if (e.key === 'ArrowUp') { active = Math.max(active - 1, 0); e.preventDefault(); highlight(els); }
+    else if (e.key === 'Enter') { if (active >= 0) { input.value = items[active]; hide(); e.preventDefault(); } }
+    else if (e.key === 'Escape') { hide(); }
+  });
+
+  input.addEventListener('blur', () => setTimeout(hide, 150));
+})();
+</script>
 {% endblock %}
