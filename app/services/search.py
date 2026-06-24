@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from app import cache
 from app.models import Listing, SearchFilters
@@ -11,8 +12,70 @@ from app.services import ranking, transit
 log = logging.getLogger(__name__)
 
 
+def _norm_address(addr: str) -> str:
+    """Loosely normalize a street address so the same place written differently
+    across sites collapses to one string (drops unit/punctuation, abbreviates,
+    strips directionals)."""
+    a = addr.lower()
+    a = re.sub(r"[#.,]", " ", a)
+    a = re.sub(r"\bunit\b|\bsuite\b|\bapt\b|\bapartment\b", " ", a)
+    a = re.sub(r"\bstreet\b", "st", a)
+    a = re.sub(r"\bavenue\b", "ave", a)
+    a = re.sub(r"\bdrive\b", "dr", a)
+    a = re.sub(r"\bboulevard\b", "blvd", a)
+    a = re.sub(r"\broad\b", "rd", a)
+    a = re.sub(r"\b(nw|ne|sw|se)\b", " ", a)  # quadrant directionals
+    a = re.sub(r"\s+", " ", a).strip()
+    return a
+
+
+def _dedupe_key(l: Listing) -> tuple | None:
+    """A signature identifying the same physical posting across sites: price +
+    bedrooms + bathrooms at the same location. Coordinates (rounded to ~100m) are
+    the location signal when present, falling back to a normalized address.
+    Returns None when there's not enough location info to dedupe safely."""
+    if l.lat is not None and l.lng is not None:
+        loc: object = (round(l.lat, 3), round(l.lng, 3))
+    elif l.address:
+        loc = _norm_address(l.address)
+        if not loc:
+            return None
+    else:
+        return None
+    return (round(l.price), l.bedrooms, l.bathrooms, loc)
+
+
+def _completeness(l: Listing) -> tuple:
+    """How rich a listing is — used to pick which copy of a duplicate to keep."""
+    return (
+        len(l.photos),
+        1 if (l.lat is not None and l.lng is not None) else 0,
+        1 if l.address else 0,
+        len(l.description),
+        len(l.amenities),
+    )
+
+
+def _dedupe_cross_source(listings: list[Listing]) -> list[Listing]:
+    """Collapse the same posting appearing on multiple sites into one entry,
+    keeping the copy with the most complete data. Listings without enough info
+    to key on are kept as-is. Insertion order is preserved."""
+    best: dict[tuple, Listing] = {}
+    extras: list[Listing] = []
+    for l in listings:
+        key = _dedupe_key(l)
+        if key is None:
+            extras.append(l)
+            continue
+        cur = best.get(key)
+        if cur is None or _completeness(l) > _completeness(cur):
+            best[key] = l
+    return list(best.values()) + extras
+
+
 async def _scrape_all(filters: SearchFilters) -> list[Listing]:
-    """Run every registered scraper in parallel and dedupe by listing id."""
+    """Run every registered scraper in parallel, dedupe by listing id, then
+    collapse cross-site duplicates of the same posting."""
     results = await asyncio.gather(
         *(s.scrape(filters) for s in SCRAPERS), return_exceptions=True
     )
@@ -25,7 +88,11 @@ async def _scrape_all(filters: SearchFilters) -> list[Listing]:
     seen: dict[str, Listing] = {}
     for l in listings:
         seen.setdefault(l.id, l)
-    return list(seen.values())
+    unique = list(seen.values())
+    deduped = _dedupe_cross_source(unique)
+    if len(deduped) < len(unique):
+        log.info("cross-source dedupe: %d → %d listings", len(unique), len(deduped))
+    return deduped
 
 
 async def run_search(filters: SearchFilters) -> list[Listing]:
