@@ -30,6 +30,27 @@ app = FastAPI(lifespan=lifespan, title="ApartmentFinder")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
+def _opt_int(v: str | None) -> int | None:
+    """HTML forms post empty inputs as "" rather than omitting them, so optional
+    numeric fields arrive as strings. Treat blank/whitespace (or unparseable input)
+    as a missing value instead of letting it trigger a 422."""
+    if v is None or not v.strip():
+        return None
+    try:
+        return int(v)
+    except ValueError:
+        return None
+
+
+def _opt_float(v: str | None) -> float | None:
+    if v is None or not v.strip():
+        return None
+    try:
+        return float(v)
+    except ValueError:
+        return None
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
@@ -41,11 +62,11 @@ async def index(request: Request) -> HTMLResponse:
 @app.post("/search", response_class=HTMLResponse)
 async def search(
     request: Request,
-    price_min: int | None = Form(None),
-    price_max: int | None = Form(None),
-    bedrooms_min: int | None = Form(None),
-    bathrooms_min: float | None = Form(None),
-    sqft_min: int | None = Form(None),
+    price_min: str | None = Form(None),
+    price_max: str | None = Form(None),
+    bedrooms_min: str | None = Form(None),
+    bathrooms_min: str | None = Form(None),
+    sqft_min: str | None = Form(None),
     property_types: list[str] = Form(default_factory=list),
     pets_allowed: bool = Form(False),
     parking: bool = Form(False),
@@ -57,7 +78,7 @@ async def search(
     gym: bool = Form(False),
     move_in_by: str | None = Form(None),
     transit_target: str | None = Form(None),
-    transit_minutes_max: int | None = Form(None),
+    transit_minutes_max: str | None = Form(None),
     transit_mode: str = Form("transit"),
     sort_by: str = Form(SortBy.BEST_VALUE.value),
 ) -> HTMLResponse:
@@ -71,11 +92,11 @@ async def search(
             parsed_move_in = None
 
     filters = SearchFilters(
-        price_min=price_min,
-        price_max=price_max,
-        bedrooms_min=bedrooms_min,
-        bathrooms_min=bathrooms_min,
-        sqft_min=sqft_min,
+        price_min=_opt_int(price_min),
+        price_max=_opt_int(price_max),
+        bedrooms_min=_opt_int(bedrooms_min),
+        bathrooms_min=_opt_float(bathrooms_min),
+        sqft_min=_opt_int(sqft_min),
         property_types=[PropertyType(pt) for pt in property_types],
         pets_allowed=True if pets_allowed else None,
         parking=True if parking else None,
@@ -87,7 +108,7 @@ async def search(
         gym=True if gym else None,
         move_in_by=parsed_move_in,
         transit_target=transit_target or None,
-        transit_minutes_max=transit_minutes_max,
+        transit_minutes_max=_opt_int(transit_minutes_max),
         transit_mode=transit_mode,
         sort_by=SortBy(sort_by),
     )
