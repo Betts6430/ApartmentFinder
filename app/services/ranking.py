@@ -76,12 +76,10 @@ def _compute_location_scores(listings: list[Listing], target_set: bool) -> None:
         return
 
     # Fallback: distance to downtown
-    dists: list[float] = []
     for l in listings:
         if l.lat is not None and l.lng is not None:
             d = _haversine_km(l.lat, l.lng, DOWNTOWN_LAT, DOWNTOWN_LNG)
             l.location_score = max(-1.0, 1.0 - d / 15.0)  # 0km->+1, 15km+->-1ish
-            dists.append(d)
         else:
             l.location_score = -1.0
 

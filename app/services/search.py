@@ -49,6 +49,11 @@ async def run_search(filters: SearchFilters) -> list[Listing]:
             log.warning("could not geocode transit target %r — skipping commute filter", filters.transit_target)
         else:
             geo_survivors = [l for l in survivors if l.lat is not None and l.lng is not None]
+            if len(geo_survivors) < len(survivors):
+                log.debug(
+                    "commute filter: %d of %d survivors lack coordinates and can't be scored",
+                    len(survivors) - len(geo_survivors), len(survivors),
+                )
             origins = [(l.lat, l.lng) for l in geo_survivors]  # type: ignore[arg-type]
             minutes = await transit.compute_transit(origins, dest, filters.transit_mode)
             for l, m in zip(geo_survivors, minutes):

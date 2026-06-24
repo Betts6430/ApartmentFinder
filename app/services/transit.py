@@ -126,16 +126,11 @@ async def compute_transit(
         return [None] * len(origins)
 
     d_lat, d_lng = dest
-    cached_minutes: list[Optional[float]] = []
-    uncached_indices: list[int] = []
-    uncached_origins: list[tuple[float, float]] = []
-
-    for i, (lat, lng) in enumerate(origins):
-        m = await cache.get_cached_transit(lat, lng, d_lat, d_lng, mode)
-        cached_minutes.append(m)
-        if m is None:
-            uncached_indices.append(i)
-            uncached_origins.append((lat, lng))
+    # Single batched cache lookup rather than one DB round-trip per origin.
+    routes = [(lat, lng, d_lat, d_lng, mode) for lat, lng in origins]
+    cached_minutes = await cache.get_cached_transit_many(routes)
+    uncached_indices = [i for i, m in enumerate(cached_minutes) if m is None]
+    uncached_origins = [origins[i] for i in uncached_indices]
 
     if not uncached_origins:
         return cached_minutes

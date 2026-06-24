@@ -107,9 +107,10 @@ def _parse_node(node: dict[str, Any]) -> Optional[Listing]:
 
         all_tags = (node.get("amenity_tags") or []) + (node.get("building_amenity_tags") or [])
 
-        # pets: list of category ints — non-empty means pets are allowed in some form
-        pets_list = node.get("pets") or []
-        pets_allowed: Optional[bool] = bool(pets_list) if pets_list is not None else None
+        # pets: list of category ints — non-empty means pets are allowed in some form.
+        # A missing key is "unknown" (None), not "not allowed" (False).
+        raw_pets = node.get("pets")
+        pets_allowed: Optional[bool] = None if raw_pets is None else bool(raw_pets)
 
         return Listing(
             id=_stable_id("zumper", lid),

@@ -118,28 +118,23 @@ def _route_hash(o_lat: float, o_lng: float, d_lat: float, d_lng: float, mode: st
     return hashlib.sha256(key.encode()).hexdigest()
 
 
-async def get_cached_transit(
-    o_lat: float, o_lng: float, d_lat: float, d_lng: float, mode: str
-) -> Optional[float]:
-    h = _route_hash(o_lat, o_lng, d_lat, d_lng, mode)
+async def get_cached_transit_many(
+    routes: list[tuple[float, float, float, float, str]],
+) -> list[Optional[float]]:
+    """Look up many routes in a single query. Returns a list aligned to `routes`,
+    with None where a route isn't cached. routes = (o_lat, o_lng, d_lat, d_lng, mode)."""
+    if not routes:
+        return []
+    hashes = [_route_hash(*r) for r in routes]
+    placeholders = ",".join("?" * len(hashes))
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT minutes FROM transit_cache WHERE route_hash = ?", (h,)
+            f"SELECT route_hash, minutes FROM transit_cache WHERE route_hash IN ({placeholders})",
+            hashes,
         ) as cursor:
-            row = await cursor.fetchone()
-    return row[0] if row else None
-
-
-async def save_transit(
-    o_lat: float, o_lng: float, d_lat: float, d_lng: float, mode: str, minutes: float
-) -> None:
-    h = _route_hash(o_lat, o_lng, d_lat, d_lng, mode)
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO transit_cache (route_hash, minutes, created_at) VALUES (?, ?, ?)",
-            (h, minutes, datetime.utcnow().isoformat()),
-        )
-        await db.commit()
+            rows = await cursor.fetchall()
+    found = {h: m for h, m in rows}
+    return [found.get(h) for h in hashes]
 
 
 async def save_transit_bulk(

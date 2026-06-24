@@ -186,11 +186,7 @@ class RentalsCaScraper(Scraper):
                     if not data:
                         return []
                     edges = data.get("data", {}).get("edges") or []
-                    parsed = [l for l in (_parse_node(e.get("node") or {}) for e in edges) if l]
-                    has_next = (
-                        data.get("data", {}).get("pageInfo", {}).get("hasNextPage", False)
-                    )
-                    return parsed if has_next or edges else parsed
+                    return [l for l in (_parse_node(e.get("node") or {}) for e in edges) if l]
 
                 try:
                     return await asyncio.to_thread(_do)
@@ -198,8 +194,7 @@ class RentalsCaScraper(Scraper):
                     log.warning("rentals.ca page %d failed: %s", page, e)
                     return []
 
-        # Fetch page 1 first to see totalCount, then fetch remainder in parallel.
-        # Simpler: fetch first N pages in parallel; stop early if a page returns empty.
+        # Fetch the first MAX_PAGES pages in parallel; pages past the end come back empty.
         results = await asyncio.gather(
             *(fetch_page(p) for p in range(1, MAX_PAGES + 1)),
         )
