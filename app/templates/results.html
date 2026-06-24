@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% block title %}Results — ApartmentFinder{% endblock %}
+{% block content %}
+<div class="flex flex-wrap items-start justify-between gap-3 mb-3">
+  <div>
+    <h1 class="text-2xl font-semibold">{{ count }} listing{{ '' if count == 1 else 's' }}</h1>
+    {% if source_counts %}
+    <div class="mt-1 text-sm text-slate-500">
+      {% for src, n in source_counts.items() %}
+      <span class="inline-block mr-2">{{ n }} from <span class="font-medium text-slate-700">{{ src }}</span></span>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  <a href="/" class="text-blue-600 hover:underline text-sm whitespace-nowrap">← New search</a>
+</div>
+
+{% if listings %}
+{% set active = filters.sort_by.value %}
+<div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+  <nav class="flex flex-wrap gap-1 bg-white border border-slate-200 rounded-lg p-1 shadow-sm">
+    {% for key, label in [('best_value','Best Value'), ('best_location','Best Location'), ('nicest_places','Nicest Places'), ('price_asc','Price ↑'), ('price_desc','Price ↓')] %}
+    <button type="button" data-sort="{{ key }}"
+      class="rank-tab px-3 py-1.5 text-sm rounded-md transition {% if active == key %}bg-blue-600 text-white{% else %}text-slate-600 hover:bg-slate-100{% endif %}">
+      {{ label }}
+    </button>
+    {% endfor %}
+  </nav>
+
+  {% if google_maps_api_key %}
+  <div class="flex gap-1 bg-white border border-slate-200 rounded-lg p-1 shadow-sm">
+    <button id="viewGrid" type="button" class="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white">Grid</button>
+    <button id="viewMap" type="button" class="px-3 py-1.5 text-sm rounded-md text-slate-600 hover:bg-slate-100">Map</button>
+  </div>
+  {% endif %}
+</div>
+
+<div id="grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+  {% for l in listings %}
+  <article
+    data-best_value="{{ '%.4f'|format(l.value_score or 0) }}"
+    data-best_location="{{ '%.4f'|format(l.location_score or 0) }}"
+    data-nicest_places="{{ '%.4f'|format(l.niceness_score or 0) }}"
+    data-price_asc="{{ '%.4f'|format(-l.price) }}"
+    data-price_desc="{{ '%.4f'|format(l.price) }}"
+    data-lat="{{ l.lat if l.lat is not none else '' }}"
+    data-lng="{{ l.lng if l.lng is not none else '' }}"
+    data-id="{{ l.id }}"
+    class="listing-card bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm flex flex-col">
+    {% if l.photos %}
+    <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="block aspect-[4/3] bg-slate-100">
+      <img src="{{ l.photos[0] }}" alt="" loading="lazy" class="w-full h-full object-cover" />
+    </a>
+    {% else %}
+    <div class="aspect-[4/3] bg-slate-100 flex items-center justify-center text-slate-400 text-sm">No photo</div>
+    {% endif %}
+    <div class="p-4 flex flex-col gap-2 flex-grow">
+      <div class="flex items-baseline justify-between gap-2">
+        <div class="text-lg font-semibold">${{ "{:,.0f}".format(l.price) }}<span class="text-sm font-normal text-slate-500">/mo</span></div>
+        <div class="text-xs uppercase tracking-wide text-slate-400">{{ l.source }}</div>
+      </div>
+      <div class="text-sm text-slate-700">
+        {{ l.bedrooms|int if l.bedrooms == l.bedrooms|int else l.bedrooms }} bd ·
+        {{ l.bathrooms|int if l.bathrooms == l.bathrooms|int else l.bathrooms }} ba
+        {% if l.sqft %} · {{ l.sqft }} sqft{% endif %}
+        · <span class="capitalize">{{ l.property_type.value }}</span>
+      </div>
+      <div class="text-sm text-slate-600 line-clamp-2">{{ l.title }}</div>
+      {% if l.address %}<div class="text-xs text-slate-500">{{ l.address }}{% if l.neighborhood %} · {{ l.neighborhood }}{% endif %}</div>{% endif %}
+
+      <div class="flex flex-wrap gap-1 mt-1">
+        {% if l.in_suite_laundry %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">Laundry</span>{% endif %}
+        {% if l.parking %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">Parking</span>{% endif %}
+        {% if l.dishwasher %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">Dishwasher</span>{% endif %}
+        {% if l.ac %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">A/C</span>{% endif %}
+        {% if l.balcony %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">Balcony</span>{% endif %}
+        {% if l.gym %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">Gym</span>{% endif %}
+        {% if l.pets_allowed %}<span class="text-xs px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded">Pets OK</span>{% endif %}
+      </div>
+
+      {% if l.transit_minutes is not none %}
+      <div class="text-xs text-emerald-700 font-medium mt-1">{{ l.transit_minutes|round|int }} min commute</div>
+      {% endif %}
+      <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="mt-auto pt-2 inline-block text-sm text-blue-600 hover:underline">View on {{ l.source }} →</a>
+    </div>
+  </article>
+  {% endfor %}
+</div>
+
+{% if google_maps_api_key %}
+<div id="map" class="hidden w-full h-[calc(100vh-220px)] min-h-[500px] rounded-xl border border-slate-200 bg-slate-100"></div>
+{% endif %}
+
+<script>
+(function() {
+  const grid = document.getElementById('grid');
+  const tabs = document.querySelectorAll('.rank-tab');
+  function applySort(key) {
+    const cards = Array.from(grid.children);
+    cards.sort((a, b) => parseFloat(b.dataset[key]) - parseFloat(a.dataset[key]));
+    const frag = document.createDocumentFragment();
+    cards.forEach(c => frag.appendChild(c));
+    grid.appendChild(frag);
+  }
+  tabs.forEach(btn => {
+    btn.addEventListener('click', () => {
+      tabs.forEach(b => {
+        b.classList.remove('bg-blue-600', 'text-white');
+        b.classList.add('text-slate-600', 'hover:bg-slate-100');
+      });
+      btn.classList.add('bg-blue-600', 'text-white');
+      btn.classList.remove('text-slate-600', 'hover:bg-slate-100');
+      applySort(btn.dataset.sort);
+    });
+  });
+})();
+</script>
+
+{% if google_maps_api_key %}
+<script>
+(function() {
+  const gridBtn = document.getElementById('viewGrid');
+  const mapBtn = document.getElementById('viewMap');
+  const grid = document.getElementById('grid');
+  const mapEl = document.getElementById('map');
+  let mapInstance = null;
+  let markers = [];
+
+  function setActive(active, inactive) {
+    active.classList.add('bg-blue-600', 'text-white');
+    active.classList.remove('text-slate-600', 'hover:bg-slate-100');
+    inactive.classList.remove('bg-blue-600', 'text-white');
+    inactive.classList.add('text-slate-600', 'hover:bg-slate-100');
+  }
+
+  function initMap() {
+    if (mapInstance) return;
+    const cards = Array.from(grid.querySelectorAll('.listing-card'))
+      .filter(c => c.dataset.lat && c.dataset.lng);
+    const center = cards.length
+      ? { lat: parseFloat(cards[0].dataset.lat), lng: parseFloat(cards[0].dataset.lng) }
+      : { lat: 53.5444, lng: -113.4909 };  // downtown Edmonton fallback
+    mapInstance = new google.maps.Map(mapEl, { center, zoom: 11, mapTypeControl: false });
+    const bounds = new google.maps.LatLngBounds();
+    const info = new google.maps.InfoWindow();
+    cards.forEach(c => {
+      const lat = parseFloat(c.dataset.lat);
+      const lng = parseFloat(c.dataset.lng);
+      const m = new google.maps.Marker({ position: { lat, lng }, map: mapInstance });
+      const price = c.querySelector('.text-lg').innerHTML;
+      const title = c.querySelector('.line-clamp-2')?.textContent.trim() || '';
+      const url = c.querySelector('a[target="_blank"]')?.href || '#';
+      m.addListener('click', () => {
+        info.setContent('<div style="font-size:13px;line-height:1.4"><b>' + price + '</b><br>' + title + '<br><a href="' + url + '" target="_blank" rel="noopener">View →</a></div>');
+        info.open(mapInstance, m);
+      });
+      markers.push(m);
+      bounds.extend({ lat, lng });
+    });
+    if (cards.length > 1) mapInstance.fitBounds(bounds);
+  }
+
+  gridBtn.addEventListener('click', () => {
+    grid.classList.remove('hidden');
+    mapEl.classList.add('hidden');
+    setActive(gridBtn, mapBtn);
+  });
+  mapBtn.addEventListener('click', () => {
+    grid.classList.add('hidden');
+    mapEl.classList.remove('hidden');
+    setActive(mapBtn, gridBtn);
+    if (window.google && window.google.maps) initMap();
+    else window.__pendingInitMap = initMap;
+  });
+  window.__initMap = function() {
+    if (window.__pendingInitMap) { window.__pendingInitMap(); window.__pendingInitMap = null; }
+  };
+})();
+</script>
+<script async defer src="https://maps.googleapis.com/maps/api/js?key={{ google_maps_api_key }}&callback=__initMap&loading=async"></script>
+{% endif %}
+
+{% else %}
+<div class="bg-white border border-slate-200 rounded-xl p-8 text-center text-slate-500">
+  No listings matched your filters. <a href="/" class="text-blue-600 hover:underline">Try a broader search.</a>
+</div>
+{% endif %}
+{% endblock %}

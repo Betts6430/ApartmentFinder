@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Search — ApartmentFinder{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-semibold mb-6">Find a place</h1>
+<form id="searchForm" action="/search" method="post" class="bg-white border border-slate-200 rounded-xl p-6 space-y-6 shadow-sm"
+      onsubmit="document.getElementById('loadingOverlay').classList.remove('hidden')">
+
+  <section class="grid grid-cols-1 md:grid-cols-4 gap-4">
+    <label class="block">
+      <span class="text-sm text-slate-600">Price min ($)</span>
+      <input type="number" name="price_min" min="0" class="mt-1 w-full rounded-md border-slate-300 shadow-sm focus:ring focus:ring-blue-200" />
+    </label>
+    <label class="block">
+      <span class="text-sm text-slate-600">Price max ($)</span>
+      <input type="number" name="price_max" min="0" class="mt-1 w-full rounded-md border-slate-300 shadow-sm focus:ring focus:ring-blue-200" />
+    </label>
+    <label class="block">
+      <span class="text-sm text-slate-600">Bedrooms (min)</span>
+      <input type="number" name="bedrooms_min" min="0" step="1" class="mt-1 w-full rounded-md border-slate-300 shadow-sm focus:ring focus:ring-blue-200" />
+    </label>
+    <label class="block">
+      <span class="text-sm text-slate-600">Bathrooms (min)</span>
+      <input type="number" name="bathrooms_min" min="0" step="0.5" class="mt-1 w-full rounded-md border-slate-300 shadow-sm focus:ring focus:ring-blue-200" />
+    </label>
+    <label class="block">
+      <span class="text-sm text-slate-600">Square feet (min)</span>
+      <input type="number" name="sqft_min" min="0" class="mt-1 w-full rounded-md border-slate-300 shadow-sm focus:ring focus:ring-blue-200" />
+    </label>
+  </section>
+
+  <section>
+    <div class="text-sm text-slate-600 mb-2">Property type (leave empty for all)</div>
+    <div class="flex flex-wrap gap-2">
+      {% for pt in property_types %}
+      <label class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-slate-300 bg-slate-50 hover:bg-slate-100 cursor-pointer">
+        <input type="checkbox" name="property_types" value="{{ pt.value }}" class="rounded" />
+        <span class="text-sm capitalize">{{ pt.value }}</span>
+      </label>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <label class="inline-flex items-center gap-2"><input type="checkbox" name="pets_allowed" class="rounded" /> Pets allowed</label>
+    <label class="inline-flex items-center gap-2"><input type="checkbox" name="parking" class="rounded" /> Parking</label>
+    <label class="inline-flex items-center gap-2"><input type="checkbox" name="in_suite_laundry" class="rounded" /> In-suite laundry</label>
+    <label class="inline-flex items-center gap-2"><input type="checkbox" name="furnished" class="rounded" /> Furnished</label>
+    <label class="inline-flex items-center gap-2"><input type="checkbox" name="dishwasher" class="rounded" /> Dishwasher</label>
+    <label class="inline-flex items-center gap-2"><input type="checkbox" name="ac" class="rounded" /> A/C</label>
+    <label class="inline-flex items-center gap-2"><input type="checkbox" name="balcony" class="rounded" /> Balcony</label>
+    <label class="inline-flex items-center gap-2"><input type="checkbox" name="gym" class="rounded" /> Gym</label>
+  </section>
+
+  <section class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <label class="block">
+      <span class="text-sm text-slate-600">Move in by</span>
+      <input type="date" name="move_in_by" class="mt-1 w-full rounded-md border-slate-300 shadow-sm focus:ring focus:ring-blue-200" />
+    </label>
+  </section>
+
+  <section class="border-t border-slate-200 pt-4">
+    <h2 class="text-sm font-medium text-slate-700 mb-3">Commute filter (optional)</h2>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <label class="block md:col-span-1">
+        <span class="text-sm text-slate-600">Commute to</span>
+        <input type="text" name="transit_target" placeholder="e.g. University of Alberta" class="mt-1 w-full rounded-md border-slate-300 shadow-sm focus:ring focus:ring-blue-200" />
+      </label>
+      <label class="block">
+        <span class="text-sm text-slate-600">Max minutes</span>
+        <input type="number" name="transit_minutes_max" min="0" class="mt-1 w-full rounded-md border-slate-300 shadow-sm focus:ring focus:ring-blue-200" />
+      </label>
+      <label class="block">
+        <span class="text-sm text-slate-600">Mode</span>
+        <select name="transit_mode" class="mt-1 w-full rounded-md border-slate-300 shadow-sm focus:ring focus:ring-blue-200">
+          <option value="transit">Public transit</option>
+          <option value="driving">Driving</option>
+          <option value="walking">Walking</option>
+          <option value="bicycling">Bicycling</option>
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <section class="flex items-center justify-between border-t border-slate-200 pt-4">
+    <label class="block">
+      <span class="text-sm text-slate-600">Sort by</span>
+      <select name="sort_by" class="mt-1 rounded-md border-slate-300 shadow-sm focus:ring focus:ring-blue-200">
+        {% for s in sort_options %}
+        <option value="{{ s.value }}">{{ s.value.replace('_', ' ').title() }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit" class="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg shadow">Search</button>
+  </section>
+</form>
+
+<div id="loadingOverlay" class="hidden fixed inset-0 bg-white/85 backdrop-blur-sm z-50 flex items-center justify-center">
+  <div class="text-center">
+    <div class="animate-spin h-14 w-14 border-4 border-blue-600 border-t-transparent rounded-full mx-auto"></div>
+    <p class="mt-4 text-slate-700 font-medium">Searching Edmonton rentals…</p>
+    <p class="mt-1 text-slate-500 text-sm">RentFaster · Rentals.ca · Zumper</p>
+  </div>
+</div>
+{% endblock %}
