@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import random
 import re
 from typing import Any, Optional
 
@@ -169,44 +170,89 @@ def _parse_node(node: dict[str, Any]) -> Optional[Listing]:
 class RentalsCaScraper(Scraper):
     name = "rentals.ca"
 
-    def __init__(self, concurrency: int = 8) -> None:
+    def __init__(
+        self,
+        concurrency: int = 4,
+        max_retries: int = 2,
+        backoff: float = 0.6,
+        wave_delay: float = 0.25,
+    ) -> None:
+        # rentals.ca rate-limits hard (HTTP 429/403). Since the pool is only
+        # scraped ~once per cache-TTL, we favour gentle-and-reliable over fast:
+        # few concurrent requests, a small gap between waves, and per-page retries.
         self._concurrency = concurrency
+        self._max_retries = max_retries
+        self._backoff = backoff
+        self._wave_delay = wave_delay
         self._impersonate = "chrome124"
 
     async def scrape(self, filters: SearchFilters) -> list[Listing]:
-        sem = asyncio.Semaphore(self._concurrency)
+        async def fetch_page(page: int) -> Optional[list[Listing]]:
+            """Returns the page's listings, or None if the request failed after
+            retries. An empty list means a successful fetch of a page past the
+            last result."""
+            def _do() -> list[Listing]:
+                with cr.Session(impersonate=self._impersonate) as s:
+                    r = s.get(f"{SEARCH_URL}?p={page}", timeout=25)
+                    r.raise_for_status()
+                data = _extract_response_json(r.text)
+                if not data:
+                    return []
+                edges = data.get("data", {}).get("edges") or []
+                return [l for l in (_parse_node(e.get("node") or {}) for e in edges) if l]
 
-        async def fetch_page(page: int) -> list[Listing]:
-            async with sem:
-                def _do() -> list[Listing]:
-                    with cr.Session(impersonate=self._impersonate) as s:
-                        r = s.get(f"{SEARCH_URL}?p={page}", timeout=25)
-                        r.raise_for_status()
-                    data = _extract_response_json(r.text)
-                    if not data:
-                        return []
-                    edges = data.get("data", {}).get("edges") or []
-                    return [l for l in (_parse_node(e.get("node") or {}) for e in edges) if l]
-
+            for attempt in range(self._max_retries + 1):
                 try:
                     return await asyncio.to_thread(_do)
                 except Exception as e:
-                    log.warning("rentals.ca page %d failed: %s", page, e)
-                    return []
+                    if attempt < self._max_retries:
+                        # Exponential backoff with jitter to ride out a 429/403.
+                        await asyncio.sleep(self._backoff * (2 ** attempt) + random.uniform(0, 0.3))
+                        continue
+                    log.warning("rentals.ca page %d failed after %d attempts: %s", page, attempt + 1, e)
+                    return None
+            return None
 
-        # Fetch the first MAX_PAGES pages in parallel; pages past the end come back empty.
-        results = await asyncio.gather(
-            *(fetch_page(p) for p in range(1, MAX_PAGES + 1)),
-        )
-
+        # Edmonton has far fewer than MAX_PAGES pages of results. Fetching them all
+        # in one burst both wastes requests and gets pages rate-limited. Instead
+        # fetch in small waves and stop as soon as results run out — signalled by a
+        # successfully-fetched empty page, or a wave that adds no new listings (some
+        # out-of-range pages echo the last page rather than returning empty). A wave
+        # where *every* page errored doesn't stop us, so a transient burst of 429s
+        # can't silently truncate the results.
         listings: list[Listing] = []
         seen_ids: set[str] = set()
-        for batch in results:
-            for l in batch:
-                if l.id in seen_ids:
-                    continue
-                seen_ids.add(l.id)
-                listings.append(l)
+        pages_fetched = 0
+        wave_starts = list(range(1, MAX_PAGES + 1, self._concurrency))
+        for wi, wave_start in enumerate(wave_starts):
+            wave_pages = list(range(wave_start, min(wave_start + self._concurrency, MAX_PAGES + 1)))
+            wave = await asyncio.gather(*(fetch_page(p) for p in wave_pages))
+            pages_fetched += len(wave_pages)
 
-        log.info("rentals.ca scraped %d listings across up to %d pages", len(listings), MAX_PAGES)
+            reached_end = False
+            new_in_wave = 0
+            any_success = False
+            for batch in wave:
+                if batch is None:
+                    continue  # error even after retries — ignore, keep paginating
+                any_success = True
+                if not batch:
+                    reached_end = True  # valid page with no results => past the end
+                    continue
+                for l in batch:
+                    if l.id in seen_ids:
+                        continue
+                    seen_ids.add(l.id)
+                    listings.append(l)
+                    new_in_wave += 1
+
+            if reached_end or (any_success and new_in_wave == 0):
+                break
+            if wi < len(wave_starts) - 1:
+                await asyncio.sleep(self._wave_delay)
+
+        log.info(
+            "rentals.ca scraped %d listings across %d pages (cap %d)",
+            len(listings), pages_fetched, MAX_PAGES,
+        )
         return listings

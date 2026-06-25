@@ -15,12 +15,36 @@
   <a href="/" class="text-blue-600 hover:underline text-sm whitespace-nowrap">← New search</a>
 </div>
 
+{% for w in warnings %}
+<div class="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">{{ w }}</div>
+{% endfor %}
+
+{# Hidden form carrying the full filter state so sort tabs and pagination re-run
+   the search server-side (each page is only a slice of the ranked result set). #}
+<form id="stateForm" action="/search" method="post" class="hidden">
+  {% if filters.price_min is not none %}<input type="hidden" name="price_min" value="{{ filters.price_min }}">{% endif %}
+  {% if filters.price_max is not none %}<input type="hidden" name="price_max" value="{{ filters.price_max }}">{% endif %}
+  {% if filters.bedrooms_min is not none %}<input type="hidden" name="bedrooms_min" value="{{ filters.bedrooms_min }}">{% endif %}
+  {% if filters.bathrooms_min is not none %}<input type="hidden" name="bathrooms_min" value="{{ filters.bathrooms_min }}">{% endif %}
+  {% if filters.sqft_min is not none %}<input type="hidden" name="sqft_min" value="{{ filters.sqft_min }}">{% endif %}
+  {% for pt in filters.property_types %}<input type="hidden" name="property_types" value="{{ pt.value }}">{% endfor %}
+  {% for name, val in [('pets_allowed', filters.pets_allowed), ('parking', filters.parking), ('in_suite_laundry', filters.in_suite_laundry), ('furnished', filters.furnished), ('dishwasher', filters.dishwasher), ('ac', filters.ac), ('balcony', filters.balcony), ('gym', filters.gym)] %}
+    {% if val %}<input type="hidden" name="{{ name }}" value="true">{% endif %}
+  {% endfor %}
+  {% if filters.move_in_by is not none %}<input type="hidden" name="move_in_by" value="{{ filters.move_in_by.isoformat() }}">{% endif %}
+  {% if filters.transit_target %}<input type="hidden" name="transit_target" value="{{ filters.transit_target }}">{% endif %}
+  {% if filters.transit_minutes_max is not none %}<input type="hidden" name="transit_minutes_max" value="{{ filters.transit_minutes_max }}">{% endif %}
+  <input type="hidden" name="transit_mode" value="{{ filters.transit_mode }}">
+  <input type="hidden" name="sort_by" value="{{ filters.sort_by.value }}">
+  <input type="hidden" name="page" value="{{ page }}">
+</form>
+
 {% if listings %}
 {% set active = filters.sort_by.value %}
 <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
   <nav class="flex flex-wrap gap-1 bg-white border border-slate-200 rounded-lg p-1 shadow-sm">
-    {% for key, label in [('best_value','Best Value'), ('best_location','Best Location'), ('nicest_places','Nicest Places'), ('price_asc','Price ↑'), ('price_desc','Price ↓')] %}
-    <button type="button" data-sort="{{ key }}"
+    {% for key, label in [('best_value','Best Value'), ('best_location','Best Location'), ('nicest_places','Nicest Places'), ('price_asc','Price ↑'), ('price_desc','Price ↓'), ('newest','Newest')] %}
+    <button type="button" onclick="submitSearch('{{ key }}', 1)"
       class="rank-tab px-3 py-1.5 text-sm rounded-md transition {% if active == key %}bg-blue-600 text-white{% else %}text-slate-600 hover:bg-slate-100{% endif %}">
       {{ label }}
     </button>
@@ -35,14 +59,13 @@
   {% endif %}
 </div>
 
+{% if total_pages > 1 %}
+<p class="text-sm text-slate-500 mb-3">Showing {{ page_start + 1 }}–{{ page_end }} of {{ count }} · page {{ page }} of {{ total_pages }}</p>
+{% endif %}
+
 <div id="grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
   {% for l in listings %}
   <article
-    data-best_value="{{ '%.4f'|format(l.value_score or 0) }}"
-    data-best_location="{{ '%.4f'|format(l.location_score or 0) }}"
-    data-nicest_places="{{ '%.4f'|format(l.niceness_score or 0) }}"
-    data-price_asc="{{ '%.4f'|format(-l.price) }}"
-    data-price_desc="{{ '%.4f'|format(l.price) }}"
     data-lat="{{ l.lat if l.lat is not none else '' }}"
     data-lng="{{ l.lng if l.lng is not none else '' }}"
     data-id="{{ l.id }}"
@@ -87,33 +110,29 @@
   {% endfor %}
 </div>
 
+{% if total_pages > 1 %}
+<nav class="flex items-center justify-center gap-3 mt-6">
+  <button type="button" onclick="submitSearch(null, {{ page - 1 }})" {% if page <= 1 %}disabled{% endif %}
+    class="px-3 py-1.5 text-sm rounded-md border border-slate-200 bg-white text-slate-600 enabled:hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed">← Prev</button>
+  <span class="text-sm text-slate-500">Page {{ page }} of {{ total_pages }}</span>
+  <button type="button" onclick="submitSearch(null, {{ page + 1 }})" {% if page >= total_pages %}disabled{% endif %}
+    class="px-3 py-1.5 text-sm rounded-md border border-slate-200 bg-white text-slate-600 enabled:hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed">Next →</button>
+</nav>
+{% endif %}
+
 {% if google_maps_api_key %}
 <div id="map" class="hidden w-full h-[calc(100vh-220px)] min-h-[500px] rounded-xl border border-slate-200 bg-slate-100"></div>
 {% endif %}
 
 <script>
-(function() {
-  const grid = document.getElementById('grid');
-  const tabs = document.querySelectorAll('.rank-tab');
-  function applySort(key) {
-    const cards = Array.from(grid.children);
-    cards.sort((a, b) => parseFloat(b.dataset[key]) - parseFloat(a.dataset[key]));
-    const frag = document.createDocumentFragment();
-    cards.forEach(c => frag.appendChild(c));
-    grid.appendChild(frag);
-  }
-  tabs.forEach(btn => {
-    btn.addEventListener('click', () => {
-      tabs.forEach(b => {
-        b.classList.remove('bg-blue-600', 'text-white');
-        b.classList.add('text-slate-600', 'hover:bg-slate-100');
-      });
-      btn.classList.add('bg-blue-600', 'text-white');
-      btn.classList.remove('text-slate-600', 'hover:bg-slate-100');
-      applySort(btn.dataset.sort);
-    });
-  });
-})();
+// Sort tabs and pagination re-run the search server-side: each results page is
+// only a slice of the full ranked set, so we can't reorder client-side.
+function submitSearch(sort, page) {
+  const f = document.getElementById('stateForm');
+  if (sort) f.elements['sort_by'].value = sort;
+  f.elements['page'].value = page;
+  f.submit();
+}
 </script>
 
 {% if google_maps_api_key %}

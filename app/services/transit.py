@@ -32,6 +32,18 @@ BATCH_SIZE = 25
 # Bias geocoding toward Edmonton so "Whyte Ave" resolves locally.
 EDMONTON_BIAS = "53.5461,-113.4938"  # downtown lat/lng
 
+# Geocoding's `bounds` param is only a *bias*, not a restriction — Google will
+# happily resolve a nonsense query to somewhere hundreds of km away. We reject any
+# result outside this metro box (padded to include St. Albert / Sherwood Park) so a
+# bad target fails loudly instead of silently filtering every listing out and
+# burning Distance Matrix quota on a bogus destination.
+EDMONTON_BOUNDS = (53.30, 53.80, -113.85, -113.15)  # (lat_min, lat_max, lng_min, lng_max)
+
+
+def _within_edmonton(lat: float, lng: float) -> bool:
+    lat_min, lat_max, lng_min, lng_max = EDMONTON_BOUNDS
+    return lat_min <= lat <= lat_max and lng_min <= lng <= lng_max
+
 
 class TransitError(Exception):
     pass
@@ -47,7 +59,12 @@ async def geocode(query: str) -> Optional[tuple[float, float]]:
 
     cached = await cache.get_cached_geocode(query)
     if cached is not None:
-        return cached
+        # Validate cached hits too: an entry written before bounds-checking existed
+        # (or by older code) could point outside the metro.
+        if _within_edmonton(*cached):
+            return cached
+        log.warning("cached geocode for %r is outside Edmonton %s — rejecting", query, cached)
+        return None
 
     params = {
         "address": query,
@@ -69,6 +86,12 @@ async def geocode(query: str) -> Optional[tuple[float, float]]:
     loc = data["results"][0]["geometry"]["location"]
     formatted = data["results"][0].get("formatted_address", "")
     lat, lng = loc["lat"], loc["lng"]
+    if not _within_edmonton(lat, lng):
+        log.warning(
+            "geocode for %r resolved to (%.4f, %.4f) %r — outside Edmonton, rejecting",
+            query, lat, lng, formatted,
+        )
+        return None
     await cache.save_geocode(query, lat, lng, formatted)
     return lat, lng
 

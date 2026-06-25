@@ -21,6 +21,9 @@ log = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
+# Listings rendered per results page (full ranked set is sliced server-side).
+PAGE_SIZE = 60
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -122,6 +125,7 @@ async def search(
     transit_minutes_max: str | None = Form(None),
     transit_mode: str = Form("transit"),
     sort_by: str = Form(SortBy.BEST_VALUE.value),
+    page: str | None = Form(None),
 ) -> HTMLResponse:
     from datetime import date as _date
 
@@ -153,21 +157,36 @@ async def search(
         transit_mode=transit_mode,
         sort_by=SortBy(sort_by),
     )
-    listings = await run_search(filters)
+    result = await run_search(filters)
+    listings = result.listings
 
-    # Source breakdown for the header chip
+    # Source breakdown for the header chip (over the full result set, not just the page).
     source_counts: dict[str, int] = {}
     for l in listings:
         source_counts[l.source] = source_counts.get(l.source, 0) + 1
+
+    # Paginate: results are already ranked, so we render one page slice at a time
+    # instead of shipping all ~1600 cards (and map markers) in a single response.
+    total = len(listings)
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    cur_page = min(max(_opt_int(page) or 1, 1), total_pages)
+    start = (cur_page - 1) * PAGE_SIZE
+    page_listings = listings[start : start + PAGE_SIZE]
 
     return templates.TemplateResponse(
         "results.html",
         {
             "request": request,
             "filters": filters,
-            "listings": listings,
-            "count": len(listings),
+            "listings": page_listings,
+            "count": total,
             "source_counts": dict(sorted(source_counts.items(), key=lambda kv: -kv[1])),
             "google_maps_api_key": settings.google_maps_api_key,
+            "warnings": result.warnings,
+            "page": cur_page,
+            "total_pages": total_pages,
+            "page_size": PAGE_SIZE,
+            "page_start": start,
+            "page_end": start + len(page_listings),
         },
     )

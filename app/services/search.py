@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from dataclasses import dataclass, field
 
 from app import cache
 from app.models import Listing, SearchFilters
@@ -10,6 +11,15 @@ from app.scrapers import SCRAPERS
 from app.services import ranking, transit
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class SearchResult:
+    """Outcome of a search: the ranked listings plus any user-facing warnings
+    (e.g. a commute target that couldn't be located)."""
+
+    listings: list[Listing]
+    warnings: list[str] = field(default_factory=list)
 
 
 def _norm_address(addr: str) -> str:
@@ -95,8 +105,9 @@ async def _scrape_all(filters: SearchFilters) -> list[Listing]:
     return deduped
 
 
-async def run_search(filters: SearchFilters) -> list[Listing]:
+async def run_search(filters: SearchFilters) -> SearchResult:
     """Top-level search orchestration: cache → scrape → filter → transit enrich → final filter."""
+    warnings: list[str] = []
     key = filters.scrape_cache_key()
     listings = await cache.get_cached_search(key)
     if listings is None:
@@ -114,6 +125,10 @@ async def run_search(filters: SearchFilters) -> list[Listing]:
         dest = await transit.geocode(filters.transit_target)
         if dest is None:
             log.warning("could not geocode transit target %r — skipping commute filter", filters.transit_target)
+            warnings.append(
+                f"Couldn't find “{filters.transit_target}” near Edmonton, so the commute "
+                "filter was skipped. Try a more specific address or place name."
+            )
         else:
             geo_survivors = [l for l in survivors if l.lat is not None and l.lng is not None]
             if len(geo_survivors) < len(survivors):
@@ -134,4 +149,4 @@ async def run_search(filters: SearchFilters) -> list[Listing]:
                 ]
 
     ranking.apply_scores(survivors, filters)
-    return ranking.sort_listings(survivors, filters.sort_by)
+    return SearchResult(listings=ranking.sort_listings(survivors, filters.sort_by), warnings=warnings)
