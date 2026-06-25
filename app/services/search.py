@@ -58,8 +58,11 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 
 
 def _completeness(l: Listing) -> tuple:
-    """How rich a listing is — used to pick which copy of a duplicate to keep."""
+    """How rich a listing is — used to pick which copy of a duplicate to keep.
+    A contactable copy (has a phone) is preferred so dedupe doesn't drop the one
+    the Contact button can act on."""
     return (
+        1 if l.phone else 0,
         len(l.photos),
         1 if (l.lat is not None and l.lng is not None) else 0,
         1 if l.address else 0,

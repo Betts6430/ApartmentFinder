@@ -59,7 +59,7 @@ class SearchFilters(BaseModel):
         """All scrapers pull the full Edmonton listing pool — there's one cache entry,
         not one per filter combination. Filters are applied to the cached pool in-memory.
         """
-        return "edmonton:pool:v3"
+        return "edmonton:pool:v4"
 
 
 class Listing(BaseModel):
@@ -82,6 +82,10 @@ class Listing(BaseModel):
     postal_code: Optional[str] = None
     lat: Optional[float] = None
     lng: Optional[float] = None
+
+    # Contact number (digits only), when the source exposes one. RentFaster does;
+    # Rentals.ca / Zumper gate contact behind on-site forms, so it's None there.
+    phone: Optional[str] = None
 
     pets_allowed: Optional[bool] = None
     parking: Optional[bool] = None

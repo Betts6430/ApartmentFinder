@@ -105,6 +105,10 @@ def _parse_listing(raw: dict[str, Any]) -> Optional[Listing]:
         if thumb:
             photos.append(thumb)
 
+        # Contact phone — digits only; accept only plausible NANP lengths.
+        phone_digits = "".join(c for c in str(raw.get("phone") or "") if c.isdigit())
+        phone = phone_digits if len(phone_digits) in (10, 11) else None
+
         cats = _to_int(raw.get("cats"))
         dogs = _to_int(raw.get("dogs"))
         pets_allowed: Optional[bool]
@@ -140,6 +144,7 @@ def _parse_listing(raw: dict[str, Any]) -> Optional[Listing]:
             city=str(raw.get("city") or "Edmonton"),
             lat=_to_float(raw.get("latitude")),
             lng=_to_float(raw.get("longitude")),
+            phone=phone,
             pets_allowed=pets_allowed,
             parking=_to_bool_pos(raw.get("parking_available")),
             in_suite_laundry=_to_bool_pos(raw.get("laundry_in_suite")),

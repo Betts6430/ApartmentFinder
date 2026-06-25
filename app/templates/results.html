@@ -1,6 +1,35 @@
 {% extends "base.html" %}
 {% block title %}Results — ApartmentFinder{% endblock %}
 {% block content %}
+
+{# Contact affordance. RentFaster exposes a phone number, so we show a panel with
+   the number, a pre-written availability/viewing message, tel/sms links and a copy
+   button. Other sources gate contact behind their own forms, so we just link out. #}
+{% macro contact_block(l) %}
+  {% if l.phone %}
+    {% set d = l.phone %}
+    {% set tel = ('+1' ~ d) if d|length == 11 else (('+1' ~ d) if d|length == 10 else d) %}
+    {% set where = (' at ' ~ l.address) if l.address else '' %}
+    {% set msg = "Hi! I saw your listing" ~ where ~ " for $" ~ "{:,.0f}".format(l.price) ~ "/mo on " ~ l.source ~ " — is it still available? I'd love to book a viewing." %}
+    <div>
+      <button type="button" class="contact-toggle inline-flex items-center gap-1 text-sm text-blue-600 hover:underline" aria-expanded="false">📞 Contact owner</button>
+      <div class="contact-panel hidden mt-2 rounded-md border border-slate-200 bg-slate-50 p-2.5 text-xs space-y-2">
+        <div>
+          <a href="tel:{{ tel }}" class="font-medium text-blue-600 hover:underline">{% if d|length == 10 %}({{ d[:3] }}) {{ d[3:6] }}-{{ d[6:] }}{% elif d|length == 11 %}{{ d[0] }} ({{ d[1:4] }}) {{ d[4:7] }}-{{ d[7:] }}{% else %}{{ d }}{% endif %}</a>
+        </div>
+        <textarea readonly rows="3" class="contact-msg w-full resize-none rounded border border-slate-200 bg-white p-1.5 text-slate-700">{{ msg }}</textarea>
+        <div class="flex flex-wrap gap-1.5">
+          <a href="sms:{{ tel }}?&body={{ msg | urlencode }}" class="px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700">Text</a>
+          <button type="button" class="copy-msg px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100">Copy message</button>
+          <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100">View listing</a>
+        </div>
+      </div>
+    </div>
+  {% else %}
+    <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="inline-block text-sm text-blue-600 hover:underline">Contact on {{ l.source }} →</a>
+  {% endif %}
+{% endmacro %}
+
 <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
   <div>
     <h1 class="text-2xl font-semibold">{{ count }} listing{{ '' if count == 1 else 's' }}</h1>
@@ -105,7 +134,7 @@
       {% if l.transit_minutes is not none %}
       <div class="text-xs text-emerald-700 font-medium mt-1">{{ l.transit_minutes|round|int }} min commute</div>
       {% endif %}
-      <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="mt-auto pt-2 inline-block text-sm text-blue-600 hover:underline">View on {{ l.source }} →</a>
+      <div class="mt-auto pt-2">{{ contact_block(l) }}</div>
     </div>
   </article>
   {% endfor %}
@@ -142,7 +171,7 @@
       {% if l.pets_allowed %}{% set _ = amenities.append('Pets OK') %}{% endif %}
       {% if amenities %}<div class="text-xs text-slate-500">{{ amenities | join(' · ') }}</div>{% endif %}
       {% if l.transit_minutes is not none %}<div class="text-xs text-emerald-700 font-medium">{{ l.transit_minutes|round|int }} min commute</div>{% endif %}
-      <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="text-sm text-blue-600 hover:underline">View on {{ l.source }} →</a>
+      <div class="pt-0.5">{{ contact_block(l) }}</div>
     </div>
   </div>
   {% endfor %}
@@ -171,6 +200,26 @@ function submitSearch(sort, page) {
   f.elements['page'].value = page;
   f.submit();
 }
+
+// Contact-owner panels: toggle open/closed, and copy the prewritten message.
+document.addEventListener('click', (e) => {
+  const toggle = e.target.closest('.contact-toggle');
+  if (toggle) {
+    const panel = toggle.nextElementSibling;
+    const open = panel.classList.toggle('hidden') === false;
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    return;
+  }
+  const copy = e.target.closest('.copy-msg');
+  if (copy) {
+    const msg = copy.closest('.contact-panel').querySelector('.contact-msg').value;
+    navigator.clipboard.writeText(msg).then(() => {
+      const prev = copy.textContent;
+      copy.textContent = 'Copied!';
+      setTimeout(() => { copy.textContent = prev; }, 1500);
+    }).catch(() => {});
+  }
+});
 </script>
 
 <script>

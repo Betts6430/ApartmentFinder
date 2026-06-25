@@ -61,7 +61,7 @@ app/
     search.py        run_search(): cache -> scrape -> filter -> transit enrich -> filter -> rank
     ranking.py       value/location/niceness scores + sort_listings()
     transit.py       geocode() + compute_transit() (Google Maps)
-  templates/         base.html, index.html (search form + autocomplete), results.html (cards + map)
+  templates/         base.html, index.html (search form + autocomplete), results.html (Grid/List/Map views, pagination, contact button)
   static/            (empty; mounted at /static)
 data/cache.db        SQLite cache (gitignored)
 run.sh, requirements.txt
@@ -77,13 +77,13 @@ run.sh, requirements.txt
 ## Key architecture decisions
 
 - **Single pool cache key.** The whole scraped Edmonton pool is cached under ONE
-  constant key (`edmonton:pool:v3`, see `SearchFilters.scrape_cache_key()`), NOT
+  constant key (`edmonton:pool:v4`, see `SearchFilters.scrape_cache_key()`), NOT
   per filter combo. Filters run in-memory against the cached pool. So only the
   first scrape is slow (~3–10s); later searches with different filters are <200ms.
   TTL = `SEARCH_CACHE_TTL_HOURS` (default 3h). **Bump the `vN` suffix whenever the
   shape/processing of the cached pool changes** (e.g. dedupe added at v2; proximity
-  dedupe + sqft sanitizing at v3) so stale pools get re-scraped instead of waiting
-  out the TTL.
+  dedupe + sqft sanitizing at v3; `phone` field at v4) so stale pools get
+  re-scraped instead of waiting out the TTL.
 - **Cross-source dedupe.** The same posting often appears on multiple sites. After
   the per-`id` dedupe, `_scrape_all` collapses these via `_dedupe_cross_source`
   (`services/search.py`) **before caching**, so the cached pool is already clean.
@@ -94,12 +94,21 @@ run.sh, requirements.txt
   building ~100m apart, and grid rounding split those across cell boundaries,
   leaving dupes. v2 used a 3-decimal grid; v3 uses true distance.) Listings with
   no usable location signal are kept as-is. The **richest** copy wins
-  (`_completeness`: photos → has-coords → has-address → description length →
-  amenity count). Tradeoff: two distinct units in one building sharing identical
+  (`_completeness`: has-phone → photos → has-coords → has-address → description
+  length → amenity count — has-phone is first so dedupe keeps the contactable
+  copy). Tradeoff: two distinct units in one building sharing identical
   price/beds/baths within ~200m collapse to one.
 - **Square footage is sanitized** at scrape time via `scrapers/base.sane_sqft`:
   values outside 50–50000 sqft (e.g. Zumper's int64 `9223372036854775807`
   "unknown" sentinel, or a stray `1`) become `None` rather than displaying as junk.
+- **Contact button.** `Listing.phone` (digits only) is captured when a source
+  exposes a number — **only RentFaster does**; Rentals.ca / Zumper gate contact
+  behind on-site forms. The `contact_block` Jinja macro in `results.html` renders,
+  per listing: for phone listings a togglable panel with the formatted number
+  (`tel:`/`sms:` links), a pre-written availability + viewing-request message, and
+  a "Copy message" button (the desktop path, since `sms:` is mobile-only); for the
+  rest, a plain "Contact on {source} →" link out to the listing. No messages are
+  ever sent automatically — it only drafts/opens; the user sends.
 - **Filters are optional.** `SearchFilters` fields are all `Optional`; `matches()`
   treats `None` as "don't filter on this." Empty form fields must map to `None`
   (see "blank field" note below).
@@ -173,13 +182,17 @@ running app must be restarted (or it auto-reloads) to pick up a new key.
 ## Status (as of 2026-06-24)
 
 Working: all three scrapers, pool caching, ranking, blank-field-tolerant search,
-commute filter (geocode + Distance Matrix), location autocomplete, and
-cross-source dedupe.
+commute filter (geocode + Distance Matrix), location autocomplete, cross-source
+dedupe, paginated results with Grid/List/Map views, and the contact button.
 
 Recent fixes: blank optional numeric fields no longer 422; Zumper unknown-pets bug;
 batched transit cache lookups; dead-code cleanup; location autocomplete;
 cross-source dedupe of duplicate postings; search-form UI refresh (sectioned
-card, logo header + footer in `base.html`).
+card, logo header + footer in `base.html`); reject out-of-Edmonton geocodes (with
+a results-page warning banner); **server-side pagination (60/page)** with
+filter-preserving sort/page nav; **List view** (`results.html`) alongside Grid/Map;
+**sqft sanitizing** + **proximity-based dedupe** (v4 pool); **contact button**
+(RentFaster phone → message draft; others link out).
 
 ### Possible next steps (not started)
 - Cache `/api/places/autocomplete` responses (currently every keystroke-after-debounce
