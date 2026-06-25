@@ -51,12 +51,13 @@
     {% endfor %}
   </nav>
 
-  {% if google_maps_api_key %}
   <div class="flex gap-1 bg-white border border-slate-200 rounded-lg p-1 shadow-sm">
-    <button id="viewGrid" type="button" class="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white">Grid</button>
-    <button id="viewMap" type="button" class="px-3 py-1.5 text-sm rounded-md text-slate-600 hover:bg-slate-100">Map</button>
+    <button type="button" data-view="grid" class="view-btn px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white">Grid</button>
+    <button type="button" data-view="list" class="view-btn px-3 py-1.5 text-sm rounded-md text-slate-600 hover:bg-slate-100">List</button>
+    {% if google_maps_api_key %}
+    <button type="button" data-view="map" class="view-btn px-3 py-1.5 text-sm rounded-md text-slate-600 hover:bg-slate-100">Map</button>
+    {% endif %}
   </div>
-  {% endif %}
 </div>
 
 {% if total_pages > 1 %}
@@ -110,6 +111,43 @@
   {% endfor %}
 </div>
 
+<div id="list" class="hidden bg-white border border-slate-200 rounded-xl shadow-sm divide-y divide-slate-100 overflow-hidden">
+  {% for l in listings %}
+  <div class="listing-row flex gap-4 p-4 hover:bg-slate-50">
+    {% if l.photos %}
+    <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="hidden sm:block shrink-0 w-28 h-20 rounded-md overflow-hidden bg-slate-100">
+      <img src="{{ l.photos[0] }}" alt="" loading="lazy" class="w-full h-full object-cover" />
+    </a>
+    {% endif %}
+    <div class="min-w-0 flex-1 flex flex-col gap-1">
+      <div class="flex items-baseline justify-between gap-2">
+        <span class="text-lg font-semibold">${{ "{:,.0f}".format(l.price) }}<span class="text-sm font-normal text-slate-500">/mo</span></span>
+        <span class="text-xs uppercase tracking-wide text-slate-400 shrink-0">{{ l.source }}</span>
+      </div>
+      <div class="text-sm text-slate-700">
+        {{ l.bedrooms|int if l.bedrooms == l.bedrooms|int else l.bedrooms }} bd ·
+        {{ l.bathrooms|int if l.bathrooms == l.bathrooms|int else l.bathrooms }} ba
+        {% if l.sqft %} · {{ l.sqft }} sqft{% endif %}
+        · <span class="capitalize">{{ l.property_type.value }}</span>
+      </div>
+      <div class="text-sm text-slate-600 truncate">{{ l.title }}</div>
+      {% if l.address %}<div class="text-xs text-slate-500 truncate">{{ l.address }}{% if l.neighborhood %} · {{ l.neighborhood }}{% endif %}</div>{% endif %}
+      {% set amenities = [] %}
+      {% if l.in_suite_laundry %}{% set _ = amenities.append('Laundry') %}{% endif %}
+      {% if l.parking %}{% set _ = amenities.append('Parking') %}{% endif %}
+      {% if l.dishwasher %}{% set _ = amenities.append('Dishwasher') %}{% endif %}
+      {% if l.ac %}{% set _ = amenities.append('A/C') %}{% endif %}
+      {% if l.balcony %}{% set _ = amenities.append('Balcony') %}{% endif %}
+      {% if l.gym %}{% set _ = amenities.append('Gym') %}{% endif %}
+      {% if l.pets_allowed %}{% set _ = amenities.append('Pets OK') %}{% endif %}
+      {% if amenities %}<div class="text-xs text-slate-500">{{ amenities | join(' · ') }}</div>{% endif %}
+      {% if l.transit_minutes is not none %}<div class="text-xs text-emerald-700 font-medium">{{ l.transit_minutes|round|int }} min commute</div>{% endif %}
+      <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="text-sm text-blue-600 hover:underline">View on {{ l.source }} →</a>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
 {% if total_pages > 1 %}
 <nav class="flex items-center justify-center gap-3 mt-6">
   <button type="button" onclick="submitSearch(null, {{ page - 1 }})" {% if page <= 1 %}disabled{% endif %}
@@ -135,31 +173,39 @@ function submitSearch(sort, page) {
 }
 </script>
 
-{% if google_maps_api_key %}
 <script>
 (function() {
-  const gridBtn = document.getElementById('viewGrid');
-  const mapBtn = document.getElementById('viewMap');
-  const grid = document.getElementById('grid');
-  const mapEl = document.getElementById('map');
+  const containers = {
+    grid: document.getElementById('grid'),
+    list: document.getElementById('list'),
+    map: document.getElementById('map'),  // null when no Maps key
+  };
+  const btns = Array.from(document.querySelectorAll('.view-btn'));
   let mapInstance = null;
-  let markers = [];
 
-  function setActive(active, inactive) {
-    active.classList.add('bg-blue-600', 'text-white');
-    active.classList.remove('text-slate-600', 'hover:bg-slate-100');
-    inactive.classList.remove('bg-blue-600', 'text-white');
-    inactive.classList.add('text-slate-600', 'hover:bg-slate-100');
+  function styleActive(view) {
+    btns.forEach(b => {
+      const on = b.dataset.view === view;
+      b.classList.toggle('bg-blue-600', on);
+      b.classList.toggle('text-white', on);
+      b.classList.toggle('text-slate-600', !on);
+      b.classList.toggle('hover:bg-slate-100', !on);
+    });
   }
 
-  function initMap() {
-    if (mapInstance) return;
-    const cards = Array.from(grid.querySelectorAll('.listing-card'))
+  function escapeHtml(s) {
+    return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  }
+
+  function buildMap() {
+    if (mapInstance || !containers.map) return;
+    // Markers come from the (always-rendered) grid cards' coordinates.
+    const cards = Array.from(document.querySelectorAll('#grid .listing-card'))
       .filter(c => c.dataset.lat && c.dataset.lng);
     const center = cards.length
       ? { lat: parseFloat(cards[0].dataset.lat), lng: parseFloat(cards[0].dataset.lng) }
       : { lat: 53.5444, lng: -113.4909 };  // downtown Edmonton fallback
-    mapInstance = new google.maps.Map(mapEl, { center, zoom: 11, mapTypeControl: false });
+    mapInstance = new google.maps.Map(containers.map, { center, zoom: 11, mapTypeControl: false });
     const bounds = new google.maps.LatLngBounds();
     const info = new google.maps.InfoWindow();
     cards.forEach(c => {
@@ -170,32 +216,42 @@ function submitSearch(sort, page) {
       const title = c.querySelector('.line-clamp-2')?.textContent.trim() || '';
       const url = c.querySelector('a[target="_blank"]')?.href || '#';
       m.addListener('click', () => {
-        info.setContent('<div style="font-size:13px;line-height:1.4"><b>' + price + '</b><br>' + title + '<br><a href="' + url + '" target="_blank" rel="noopener">View →</a></div>');
+        info.setContent('<div style="font-size:13px;line-height:1.4"><b>' + price + '</b><br>' + escapeHtml(title) + '<br><a href="' + url + '" target="_blank" rel="noopener">View →</a></div>');
         info.open(mapInstance, m);
       });
-      markers.push(m);
       bounds.extend({ lat, lng });
     });
     if (cards.length > 1) mapInstance.fitBounds(bounds);
   }
 
-  gridBtn.addEventListener('click', () => {
-    grid.classList.remove('hidden');
-    mapEl.classList.add('hidden');
-    setActive(gridBtn, mapBtn);
-  });
-  mapBtn.addEventListener('click', () => {
-    grid.classList.add('hidden');
-    mapEl.classList.remove('hidden');
-    setActive(mapBtn, gridBtn);
-    if (window.google && window.google.maps) initMap();
-    else window.__pendingInitMap = initMap;
-  });
+  function ensureMap() {
+    if (!containers.map) return;
+    if (window.google && window.google.maps) buildMap();
+    else window.__pendingInitMap = buildMap;
+  }
   window.__initMap = function() {
     if (window.__pendingInitMap) { window.__pendingInitMap(); window.__pendingInitMap = null; }
   };
+
+  function setView(view) {
+    if (!containers[view]) view = 'grid';
+    for (const k in containers) {
+      if (containers[k]) containers[k].classList.toggle('hidden', k !== view);
+    }
+    styleActive(view);
+    try { localStorage.setItem('af_view', view); } catch (e) {}
+    if (view === 'map') ensureMap();
+  }
+
+  btns.forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
+
+  // Restore the last-used view so paging/sorting (which reload the page) keeps it.
+  let saved = 'grid';
+  try { saved = localStorage.getItem('af_view') || 'grid'; } catch (e) {}
+  setView(saved);
 })();
 </script>
+{% if google_maps_api_key %}
 <script async defer src="https://maps.googleapis.com/maps/api/js?key={{ google_maps_api_key }}&callback=__initMap&loading=async"></script>
 {% endif %}
 
