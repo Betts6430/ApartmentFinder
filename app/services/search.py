@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 from app import cache
@@ -39,20 +41,20 @@ def _norm_address(addr: str) -> str:
     return a
 
 
-def _dedupe_key(l: Listing) -> tuple | None:
-    """A signature identifying the same physical posting across sites: price +
-    bedrooms + bathrooms at the same location. Coordinates (rounded to ~100m) are
-    the location signal when present, falling back to a normalized address.
-    Returns None when there's not enough location info to dedupe safely."""
-    if l.lat is not None and l.lng is not None:
-        loc: object = (round(l.lat, 3), round(l.lng, 3))
-    elif l.address:
-        loc = _norm_address(l.address)
-        if not loc:
-            return None
-    else:
-        return None
-    return (round(l.price), l.bedrooms, l.bathrooms, loc)
+# Same posting across sites rarely has identical coordinates — each source
+# geocodes independently, so the same building can differ by ~100m. Merge listings
+# within this radius (with matching price/beds/baths). Kept small so genuinely
+# distinct units a few blocks apart (which can share price/beds/baths) don't merge.
+_DUP_RADIUS_KM = 0.2
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    R = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
 
 
 def _completeness(l: Listing) -> tuple:
@@ -66,21 +68,42 @@ def _completeness(l: Listing) -> tuple:
     )
 
 
+def _same_place(a: Listing, b: Listing) -> bool:
+    """Whether two same-price/beds/baths listings are the same physical posting.
+    Uses coordinate proximity when both have coords (robust to the ~100m jitter
+    between sources, unlike rounding to a grid); otherwise falls back to a matching
+    normalized street address. Listings with neither are never treated as the same."""
+    if None not in (a.lat, a.lng, b.lat, b.lng):
+        return _haversine_km(a.lat, a.lng, b.lat, b.lng) <= _DUP_RADIUS_KM  # type: ignore[arg-type]
+    aa = _norm_address(a.address) if a.address else ""
+    bb = _norm_address(b.address) if b.address else ""
+    return bool(aa) and aa == bb
+
+
 def _dedupe_cross_source(listings: list[Listing]) -> list[Listing]:
-    """Collapse the same posting appearing on multiple sites into one entry,
-    keeping the copy with the most complete data. Listings without enough info
-    to key on are kept as-is. Insertion order is preserved."""
-    best: dict[tuple, Listing] = {}
-    extras: list[Listing] = []
+    """Collapse the same posting appearing on multiple sites (or repeated within
+    one) into a single entry, keeping the copy with the most complete data.
+
+    Listings are bucketed by (price, bedrooms, bathrooms) and, within a bucket,
+    greedily clustered by location (coordinate proximity, else matching address).
+    Listings with no usable location signal are kept as-is."""
+    buckets: dict[tuple, list[Listing]] = defaultdict(list)
     for l in listings:
-        key = _dedupe_key(l)
-        if key is None:
-            extras.append(l)
-            continue
-        cur = best.get(key)
-        if cur is None or _completeness(l) > _completeness(cur):
-            best[key] = l
-    return list(best.values()) + extras
+        buckets[(round(l.price), l.bedrooms, l.bathrooms)].append(l)
+
+    out: list[Listing] = []
+    for group in buckets.values():
+        clusters: list[list[Listing]] = []
+        for l in group:
+            for cl in clusters:
+                if _same_place(l, cl[0]):
+                    cl.append(l)
+                    break
+            else:
+                clusters.append([l])
+        for cl in clusters:
+            out.append(max(cl, key=_completeness))
+    return out
 
 
 async def _scrape_all(filters: SearchFilters) -> list[Listing]:

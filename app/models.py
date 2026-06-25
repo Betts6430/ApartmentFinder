@@ -59,7 +59,7 @@ class SearchFilters(BaseModel):
         """All scrapers pull the full Edmonton listing pool — there's one cache entry,
         not one per filter combination. Filters are applied to the cached pool in-memory.
         """
-        return "edmonton:pool:v2"
+        return "edmonton:pool:v3"
 
 
 class Listing(BaseModel):

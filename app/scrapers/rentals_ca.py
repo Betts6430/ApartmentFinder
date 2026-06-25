@@ -18,7 +18,7 @@ from typing import Any, Optional
 from curl_cffi import requests as cr  # type: ignore[import-not-found]
 
 from app.models import Listing, PropertyType, SearchFilters
-from app.scrapers.base import Scraper
+from app.scrapers.base import Scraper, sane_sqft
 
 log = logging.getLogger(__name__)
 
@@ -152,7 +152,7 @@ def _parse_node(node: dict[str, Any]) -> Optional[Listing]:
             price=float(price),
             bedrooms=float(beds_range[0]) if beds_range else 0.0,
             bathrooms=float(baths_range[0]) if baths_range else 0.0,
-            sqft=int(size_range[0]) if size_range and size_range[0] else None,
+            sqft=sane_sqft(size_range[0]) if size_range else None,
             property_type=ptype,
             address=street or None,
             postal_code=postal,

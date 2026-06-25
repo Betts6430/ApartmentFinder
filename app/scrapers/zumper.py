@@ -17,7 +17,7 @@ from typing import Any, Optional
 from curl_cffi import requests as cr  # type: ignore[import-not-found]
 
 from app.models import Listing, PropertyType, SearchFilters
-from app.scrapers.base import Scraper
+from app.scrapers.base import Scraper, sane_sqft
 
 log = logging.getLogger(__name__)
 
@@ -120,7 +120,7 @@ def _parse_node(node: dict[str, Any]) -> Optional[Listing]:
             price=float(price),
             bedrooms=float(node.get("min_bedrooms") or 0),
             bathrooms=float(node.get("min_bathrooms") or 0),
-            sqft=int(node.get("min_square_feet")) if node.get("min_square_feet") else None,
+            sqft=sane_sqft(node.get("min_square_feet")),
             property_type=PropertyType.APARTMENT,  # Zumper search is apartments-for-rent
             address=str(node.get("address") or "").strip() or None,
             neighborhood=str(node.get("neighborhood_name") or "").strip() or None,

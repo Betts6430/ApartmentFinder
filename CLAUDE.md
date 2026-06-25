@@ -77,21 +77,29 @@ run.sh, requirements.txt
 ## Key architecture decisions
 
 - **Single pool cache key.** The whole scraped Edmonton pool is cached under ONE
-  constant key (`edmonton:pool:v2`, see `SearchFilters.scrape_cache_key()`), NOT
+  constant key (`edmonton:pool:v3`, see `SearchFilters.scrape_cache_key()`), NOT
   per filter combo. Filters run in-memory against the cached pool. So only the
   first scrape is slow (~3–10s); later searches with different filters are <200ms.
   TTL = `SEARCH_CACHE_TTL_HOURS` (default 3h). **Bump the `vN` suffix whenever the
-  shape/processing of the cached pool changes** (e.g. dedupe was added at v2) so
-  stale pools get re-scraped instead of waiting out the TTL.
+  shape/processing of the cached pool changes** (e.g. dedupe added at v2; proximity
+  dedupe + sqft sanitizing at v3) so stale pools get re-scraped instead of waiting
+  out the TTL.
 - **Cross-source dedupe.** The same posting often appears on multiple sites. After
   the per-`id` dedupe, `_scrape_all` collapses these via `_dedupe_cross_source`
   (`services/search.py`) **before caching**, so the cached pool is already clean.
-  Merge key = `(round(price), bedrooms, bathrooms, location)` where location is
-  GPS coords rounded to ~100m (3 decimals) when present, else a normalized street
-  address; listings with neither are never merged (kept as-is). When duplicates
-  collide, the **richest** copy wins (`_completeness`: photos → has-coords →
-  has-address → description length → amenity count). Tradeoff: two distinct units
-  in one building sharing identical price/beds/baths within ~100m collapse to one.
+  Listings are bucketed by `(round(price), bedrooms, bathrooms)`, then within a
+  bucket greedily clustered by location: same coords within **`_DUP_RADIUS_KM`
+  (~200m, haversine)** when both have coords, else a matching normalized street
+  address. (Proximity, not a rounded grid — different sources geocode the same
+  building ~100m apart, and grid rounding split those across cell boundaries,
+  leaving dupes. v2 used a 3-decimal grid; v3 uses true distance.) Listings with
+  no usable location signal are kept as-is. The **richest** copy wins
+  (`_completeness`: photos → has-coords → has-address → description length →
+  amenity count). Tradeoff: two distinct units in one building sharing identical
+  price/beds/baths within ~200m collapse to one.
+- **Square footage is sanitized** at scrape time via `scrapers/base.sane_sqft`:
+  values outside 50–50000 sqft (e.g. Zumper's int64 `9223372036854775807`
+  "unknown" sentinel, or a stray `1`) become `None` rather than displaying as junk.
 - **Filters are optional.** `SearchFilters` fields are all `Optional`; `matches()`
   treats `None` as "don't filter on this." Empty form fields must map to `None`
   (see "blank field" note below).
