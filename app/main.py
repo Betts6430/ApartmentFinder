@@ -58,6 +58,31 @@ def _opt_float(v: str | None) -> float | None:
         return None
 
 
+def _parse_sort(v: str) -> SortBy:
+    """Tolerate an unknown sort key instead of 500ing — fall back to Best Value."""
+    try:
+        return SortBy(v)
+    except ValueError:
+        return SortBy.BEST_VALUE
+
+
+def _script_safe_json(s: str) -> str:
+    """Escape characters that could break out of a <script> block (or be misread by
+    the HTML parser) while keeping the string valid JSON via \\uXXXX escapes."""
+    return s.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
+def _parse_property_types(values: list[str]) -> list[PropertyType]:
+    """Map form values to PropertyType, silently dropping any unrecognized ones."""
+    out: list[PropertyType] = []
+    for v in values:
+        try:
+            out.append(PropertyType(v))
+        except ValueError:
+            continue
+    return out
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
@@ -144,7 +169,7 @@ async def search(
         bedrooms_min=_opt_int(bedrooms_min),
         bathrooms_min=_opt_float(bathrooms_min),
         sqft_min=_opt_int(sqft_min),
-        property_types=[PropertyType(pt) for pt in property_types],
+        property_types=_parse_property_types(property_types),
         pets_allowed=True if pets_allowed else None,
         parking=True if parking else None,
         in_suite_laundry=True if in_suite_laundry else None,
@@ -157,7 +182,7 @@ async def search(
         transit_target=transit_target or None,
         transit_minutes_max=_opt_int(transit_minutes_max),
         transit_mode=transit_mode,
-        sort_by=SortBy(sort_by),
+        sort_by=_parse_sort(sort_by),
     )
     return await _run_and_render(request, filters, _opt_int(page) or 1)
 
@@ -190,7 +215,7 @@ async def _run_and_render(request: Request, filters: SearchFilters, page: int) -
         {
             "request": request,
             "filters": filters,
-            "filters_json": filters.model_dump_json(),
+            "filters_json": _script_safe_json(filters.model_dump_json()),
             "listings": page_listings,
             "count": total,
             "source_counts": dict(sorted(source_counts.items(), key=lambda kv: -kv[1])),
