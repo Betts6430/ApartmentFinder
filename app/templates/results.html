@@ -45,7 +45,7 @@
 {% set active = filters.sort_by.value %}
 <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
   <nav class="flex flex-wrap gap-1 bg-white border border-slate-200 rounded-lg p-1 shadow-sm">
-    {% for key, label in [('best_value','Best Value'), ('best_location','Best Location'), ('nicest_places','Nicest Places'), ('price_asc','Price ↑'), ('price_desc','Price ↓'), ('newest','Newest')] %}
+    {% for key, label in [('best_value','Best Value'), ('best_location','Best Location'), ('nicest_places','Nicest Places'), ('price_asc','Price ↑'), ('price_desc','Price ↓'), ('price_drop','Price drops'), ('newest','Newest')] %}
     <button type="button" onclick="submitSearch('{{ key }}', 1)"
       class="rank-tab px-3 py-1.5 text-sm rounded-md transition {% if active == key %}bg-blue-600 text-white{% else %}text-slate-600 hover:bg-slate-100{% endif %}">
       {{ label }}

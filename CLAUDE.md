@@ -52,7 +52,7 @@ app/
   models.py          PropertyType/SortBy enums; SearchFilters + Listing models; Listing.matches();
                      normalize_address() + address field validator (one house style)
   cache.py           SQLite cache: listings, search_cache, transit_cache, geocode_cache,
-                     favorites, listing_seen, meta, contact_cache
+                     favorites, listing_seen, meta, contact_cache, price_history
   scrapers/
     base.py          Scraper ABC
     __init__.py      SCRAPERS registry (RentFaster, RentalsCa, Zumper)
@@ -154,6 +154,17 @@ run.sh, requirements.txt
   the **previous** scrape. Nothing is flagged on the very first scrape (avoids a
   cold-start where everything looks new), and badges only appear on a fresh scrape,
   not a cached-pool hit.
+- **Price-drop tracking.** `cache.record_prices()` (also called after a fresh scrape)
+  appends to `price_history` **only when a listing's price changed** since its last
+  recorded point (or it's new) — one row per change, not per scrape, so the table
+  stays compact. On every search `run_search` enriches survivors with
+  `cache.get_price_drops()`, which compares each listing's two most recent points and
+  returns the prior price when the **latest change was a drop within 30 days**; that
+  populates the enriched `Listing.prev_price`. A rose **"↓ $X"** badge
+  (`price_drop_badge` macro) then shows on cards/rows, and the **"Price drops"** sort
+  (`SortBy.PRICE_DROP`, ranks by `prev_price - price`) surfaces the biggest reductions.
+  Drops only materialize once a price actually changes between two scrapes; the first
+  scrape just seeds the baseline.
 - **Address normalization.** Sources spell addresses inconsistently
   (`St`/`Street`/`ST`, `NW`/`Northwest`, ALL CAPS, ordinal `37th`). `normalize_address()`
   + a `Listing` **field validator** (`models.py`) coerce one house style: street
@@ -237,7 +248,7 @@ running app must be restarted (or it auto-reloads) to pick up a new key.
 Working: all three scrapers, pool caching, ranking, blank-field-tolerant search,
 commute filter (geocode + Distance Matrix), location autocomplete, cross-source
 dedupe, paginated results with Grid/List/Map views, the contact button, saved-listing
-favorites, "New" listing badges, and address normalization.
+favorites, "New" listing badges, address normalization, and price-drop tracking.
 
 Recent fixes: blank optional numeric fields no longer 422; Zumper unknown-pets bug;
 batched transit cache lookups; dead-code cleanup; location autocomplete;
@@ -254,7 +265,10 @@ save/contact actions, compacted List view; shared rendering moved to `_macros.ht
 `normalize_phone`, so the contact panel now appears for many more listings;
 **lazy on-demand Zumper phone lookup** (detail-page fetch, cached in `contact_cache`)
 behind a "Show phone number" button; `normalize_phone` now keeps extensions
-(`phone_ext`), so call-center/PM numbers aren't dropped (v6 pool).
+(`phone_ext`), so call-center/PM numbers aren't dropped (v6 pool); contact panel,
+list-row, and view-toggle UI polish (send-icon button, image-height rows, icon
+toggles); **price-drop tracking** ("↓ $X" badge + "Price drops" sort via
+`price_history`).
 
 ### Possible next steps (not started)
 - Cache `/api/places/autocomplete` responses (currently every keystroke-after-debounce

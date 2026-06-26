@@ -141,8 +141,10 @@ async def run_search(filters: SearchFilters) -> SearchResult:
         listings = await _scrape_all(filters)
         if listings:
             await cache.save_search(key, listings)
-            # Stamp first-seen / advance the scrape boundary for new-listing badges.
+            # Stamp first-seen / advance the scrape boundary for new-listing badges,
+            # and append any changed prices for drop detection.
             await cache.record_scrape([l.id for l in listings])
+            await cache.record_prices(listings)
     else:
         log.info("scrape-pool cache hit (%d listings)", len(listings))
 
@@ -175,6 +177,12 @@ async def run_search(filters: SearchFilters) -> SearchResult:
                     if l.transit_minutes is not None
                     and l.transit_minutes <= filters.transit_minutes_max
                 ]
+
+    # Enrich with the most recent price drop (if any) for badges + the drops sort.
+    drops = await cache.get_price_drops([l.id for l in survivors])
+    for l in survivors:
+        if l.id in drops:
+            l.prev_price = drops[l.id]
 
     ranking.apply_scores(survivors, filters)
     return SearchResult(listings=ranking.sort_listings(survivors, filters.sort_by), warnings=warnings)

@@ -85,6 +85,7 @@ class SortBy(str, Enum):
     NICEST_PLACES = "nicest_places"
     PRICE_ASC = "price_asc"
     PRICE_DESC = "price_desc"
+    PRICE_DROP = "price_drop"
     NEWEST = "newest"
 
 
@@ -172,6 +173,7 @@ class Listing(BaseModel):
 
     # Enriched fields, set after scrape
     transit_minutes: Optional[float] = None
+    prev_price: Optional[float] = None  # most recent earlier price, set when a drop is detected
     value_score: Optional[float] = None
     location_score: Optional[float] = None
     niceness_score: Optional[float] = None

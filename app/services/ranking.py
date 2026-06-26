@@ -115,6 +115,13 @@ def sort_listings(listings: list[Listing], sort_by: SortBy) -> list[Listing]:
         return sorted(listings, key=lambda l: l.price)
     if sort_by == SortBy.PRICE_DESC:
         return sorted(listings, key=lambda l: l.price, reverse=True)
+    if sort_by == SortBy.PRICE_DROP:
+        # Biggest recent drop first; listings with no drop sort to the bottom.
+        return sorted(
+            listings,
+            key=lambda l: (l.prev_price - l.price) if l.prev_price else 0.0,
+            reverse=True,
+        )
     if sort_by == SortBy.NEWEST:
         return sorted(listings, key=lambda l: l.scraped_at, reverse=True)
     return listings

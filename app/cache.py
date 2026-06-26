@@ -77,6 +77,15 @@ CREATE TABLE IF NOT EXISTS contact_cache (
     fetched_at TEXT NOT NULL
 );
 
+-- Per-listing price history for price-drop detection. One row per *change* (not
+-- per scrape), so it stays compact. Used to flag drops and the "Price drops" sort.
+CREATE TABLE IF NOT EXISTS price_history (
+    id TEXT NOT NULL,
+    price REAL NOT NULL,
+    seen_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_price_history_id ON price_history(id);
+
 CREATE INDEX IF NOT EXISTS idx_listings_scraped_at ON listings(scraped_at);
 CREATE INDEX IF NOT EXISTS idx_search_cache_created_at ON search_cache(created_at);
 """
@@ -313,3 +322,74 @@ async def save_contact(listing_id: str, phone: Optional[str], phone_ext: Optiona
             (listing_id, phone or "", phone_ext or "", datetime.utcnow().isoformat()),
         )
         await db.commit()
+
+
+# --- Price history -----------------------------------------------------------
+
+# SQLite caps a statement at ~999 bound parameters; chunk IN (...) queries below it.
+_SQLITE_MAX_VARS = 900
+
+
+async def record_prices(items: list[Listing]) -> None:
+    """Append a price point for any listing whose price changed since its last
+    recorded one (or that has no history yet). Called on each fresh scrape, so the
+    history stays compact — one row per actual change, not one per scrape."""
+    if not items:
+        return
+    now = datetime.utcnow().isoformat()
+    ids = [l.id for l in items]
+    latest: dict[str, float] = {}
+    async with aiosqlite.connect(DB_PATH) as db:
+        for i in range(0, len(ids), _SQLITE_MAX_VARS):
+            chunk = ids[i : i + _SQLITE_MAX_VARS]
+            ph = ",".join("?" * len(chunk))
+            async with db.execute(
+                f"SELECT id, price, MAX(seen_at) FROM price_history WHERE id IN ({ph}) GROUP BY id",
+                chunk,
+            ) as cur:
+                for r in await cur.fetchall():
+                    latest[r[0]] = r[1]
+        to_insert = [
+            (l.id, float(l.price), now)
+            for l in items
+            if l.id not in latest or abs(latest[l.id] - float(l.price)) >= 1.0
+        ]
+        if to_insert:
+            await db.executemany(
+                "INSERT INTO price_history (id, price, seen_at) VALUES (?, ?, ?)", to_insert
+            )
+            await db.commit()
+
+
+async def get_price_drops(ids: list[str], within_days: int = 30) -> dict[str, float]:
+    """For the given ids, return id -> previous price for listings whose most recent
+    price change was a *drop* within `within_days`. Returns only the prior price; the
+    caller already has the current one and can show the delta."""
+    if not ids:
+        return {}
+    cutoff = (datetime.utcnow() - timedelta(days=within_days)).isoformat()
+    out: dict[str, float] = {}
+    async with aiosqlite.connect(DB_PATH) as db:
+        for i in range(0, len(ids), _SQLITE_MAX_VARS):
+            chunk = ids[i : i + _SQLITE_MAX_VARS]
+            ph = ",".join("?" * len(chunk))
+            async with db.execute(
+                f"SELECT id, price, seen_at FROM price_history WHERE id IN ({ph}) "
+                "ORDER BY id, seen_at DESC",
+                chunk,
+            ) as cur:
+                rows = await cur.fetchall()
+            # Rows come grouped by id, newest first. Compare the two most recent points.
+            j, n = 0, len(rows)
+            while j < n:
+                lid = rows[j][0]
+                k = j
+                while k < n and rows[k][0] == lid:
+                    k += 1
+                pts = rows[j:k]
+                j = k
+                if len(pts) >= 2:
+                    cur_price, cur_seen, prev_price = pts[0][1], pts[0][2], pts[1][1]
+                    if cur_seen >= cutoff and prev_price > cur_price:
+                        out[lid] = prev_price
+    return out

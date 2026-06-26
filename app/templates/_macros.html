@@ -14,6 +14,12 @@
   {% if new_ids and l.id in new_ids %}<span class="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-emerald-500 text-white">New</span>{% endif %}
 {% endmacro %}
 
+{# Price-drop pill — "↓ $X" when a listing's most recent price change was a drop.
+   Reads the enriched l.prev_price set by run_search. #}
+{% macro price_drop_badge(l) %}
+  {% if l.prev_price and l.prev_price > l.price %}<span class="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-rose-600 text-white" title="Was ${{ '{:,.0f}'.format(l.prev_price) }}/mo">↓ ${{ '{:,.0f}'.format(l.prev_price - l.price) }}</span>{% endif %}
+{% endmacro %}
+
 {# The contact panel, shown as a floating popover anchored to its trigger button
    (absolute, so it never changes the card/row height). Holds the formatted number
    (with optional extension) and a pre-written availability/viewing message with a
@@ -101,6 +107,7 @@
       <div class="flex items-start justify-between gap-2">
         <div class="text-lg font-semibold">${{ "{:,.0f}".format(l.price) }}<span class="text-sm font-normal text-slate-500">/mo</span></div>
         <div class="flex items-center gap-2">
+          {{ price_drop_badge(l) }}
           {{ new_badge(l, new_ids) }}
           <span class="text-xs uppercase tracking-wide text-slate-400">{{ l.source }}</span>
           {{ fav_button(l, favorite_ids) }}
@@ -142,6 +149,7 @@
       <div class="flex items-baseline gap-2 min-w-0">
         <span class="text-base font-semibold whitespace-nowrap">${{ "{:,.0f}".format(l.price) }}<span class="text-xs font-normal text-slate-500">/mo</span></span>
         <span class="text-xs text-slate-600 truncate">{{ specs(l) }}</span>
+        {{ price_drop_badge(l) }}
         {{ new_badge(l, new_ids) }}
       </div>
       {% if l.address %}<div class="text-sm text-slate-600 truncate">{{ l.address }}{% if l.neighborhood %} · {{ l.neighborhood }}{% endif %}</div>{% endif %}
