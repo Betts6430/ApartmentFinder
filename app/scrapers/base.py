@@ -20,6 +20,15 @@ def sane_sqft(v: Any) -> Optional[int]:
     return n if 50 <= n <= 50000 else None
 
 
+def normalize_phone(v: Any) -> Optional[str]:
+    """Reduce a raw contact number to digits only, accepting only plausible NANP
+    lengths (10, or 11 with a leading country code). Returns None otherwise — this
+    naturally drops junk like call-center numbers carrying an `ext.` (too many
+    digits) or partial/garbled values."""
+    digits = "".join(c for c in str(v or "") if c.isdigit())
+    return digits if len(digits) in (10, 11) else None
+
+
 class Scraper(ABC):
     name: str
 

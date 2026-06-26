@@ -15,7 +15,7 @@ from typing import Any, Optional
 from curl_cffi import requests as cr  # type: ignore[import-not-found]
 
 from app.models import Listing, PropertyType, SearchFilters
-from app.scrapers.base import Scraper, sane_sqft
+from app.scrapers.base import Scraper, normalize_phone, sane_sqft
 
 log = logging.getLogger(__name__)
 
@@ -106,8 +106,7 @@ def _parse_listing(raw: dict[str, Any]) -> Optional[Listing]:
             photos.append(thumb)
 
         # Contact phone — digits only; accept only plausible NANP lengths.
-        phone_digits = "".join(c for c in str(raw.get("phone") or "") if c.isdigit())
-        phone = phone_digits if len(phone_digits) in (10, 11) else None
+        phone = normalize_phone(raw.get("phone"))
 
         cats = _to_int(raw.get("cats"))
         dogs = _to_int(raw.get("dogs"))

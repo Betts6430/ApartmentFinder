@@ -85,13 +85,13 @@ run.sh, requirements.txt
 ## Key architecture decisions
 
 - **Single pool cache key.** The whole scraped Edmonton pool is cached under ONE
-  constant key (`edmonton:pool:v4`, see `SearchFilters.scrape_cache_key()`), NOT
+  constant key (`edmonton:pool:v5`, see `SearchFilters.scrape_cache_key()`), NOT
   per filter combo. Filters run in-memory against the cached pool. So only the
   first scrape is slow (~3–10s); later searches with different filters are <200ms.
   TTL = `SEARCH_CACHE_TTL_HOURS` (default 3h). **Bump the `vN` suffix whenever the
   shape/processing of the cached pool changes** (e.g. dedupe added at v2; proximity
-  dedupe + sqft sanitizing at v3; `phone` field at v4) so stale pools get
-  re-scraped instead of waiting out the TTL.
+  dedupe + sqft sanitizing at v3; `phone` field at v4; phone for Rentals.ca/Zumper
+  at v5) so stale pools get re-scraped instead of waiting out the TTL.
 - **Cross-source dedupe.** The same posting often appears on multiple sites. After
   the per-`id` dedupe, `_scrape_all` collapses these via `_dedupe_cross_source`
   (`services/search.py`) **before caching**, so the cached pool is already clean.
@@ -109,9 +109,13 @@ run.sh, requirements.txt
 - **Square footage is sanitized** at scrape time via `scrapers/base.sane_sqft`:
   values outside 50–50000 sqft (e.g. Zumper's int64 `9223372036854775807`
   "unknown" sentinel, or a stray `1`) become `None` rather than displaying as junk.
-- **Contact button.** `Listing.phone` (digits only) is captured when a source
-  exposes a number — **only RentFaster does**; Rentals.ca / Zumper gate contact
-  behind on-site forms. The `contact_block` Jinja macro (now in `_macros.html`)
+- **Contact button.** `Listing.phone` (digits only, via `scrapers/base.normalize_phone`
+  — accepts only 10/11-digit NANP numbers, so call-center numbers carrying an `ext.`
+  are dropped) is captured when a source exposes a number. **RentFaster** (~95% of
+  its listings) and **Rentals.ca** (~30%, in `node.contact.phoneNumber`) provide
+  usable direct numbers; **Zumper** exposes `node.phone` too but in practice only
+  toll-free call-center numbers with extensions, which get rejected, so it yields
+  ~none. The `contact_block` Jinja macro (now in `_macros.html`)
   renders, per listing: for phone listings a primary **Contact** button that opens
   a panel with the formatted number (`tel:`/`sms:` links), a pre-written
   availability + viewing-request message, and a "Copy" button (the desktop path,
@@ -226,7 +230,9 @@ filter-preserving sort/page nav; **List view** (`results.html`) alongside Grid/M
 (RentFaster phone → message draft; others link out); **saved-listing favorites**
 (snapshotted) + **"New" badges**; **address normalization** (one house style via a
 model validator); listing UI cleanup (dropped repetitive titles, buttonified
-save/contact actions, compacted List view; shared rendering moved to `_macros.html`).
+save/contact actions, compacted List view; shared rendering moved to `_macros.html`);
+**phone capture for Rentals.ca** (and Zumper, though it yields ~none) via shared
+`normalize_phone`, so the contact panel now appears for many more listings (v5 pool).
 
 ### Possible next steps (not started)
 - Cache `/api/places/autocomplete` responses (currently every keystroke-after-debounce

@@ -17,7 +17,7 @@ from typing import Any, Optional
 from curl_cffi import requests as cr  # type: ignore[import-not-found]
 
 from app.models import Listing, PropertyType, SearchFilters
-from app.scrapers.base import Scraper, sane_sqft
+from app.scrapers.base import Scraper, normalize_phone, sane_sqft
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +128,7 @@ def _parse_node(node: dict[str, Any]) -> Optional[Listing]:
             postal_code=str(node.get("zipcode") or "").strip() or None,
             lat=float(node["lat"]) if node.get("lat") is not None else None,
             lng=float(node["lng"]) if node.get("lng") is not None else None,
+            phone=normalize_phone(node.get("phone")),
             pets_allowed=pets_allowed,
             parking=_amenity_present(all_tags, _AMENITY_KEYWORDS["parking"]),
             in_suite_laundry=_amenity_present(all_tags, _AMENITY_KEYWORDS["in_suite_laundry"]),
