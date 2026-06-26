@@ -1,0 +1,4 @@
+{# Fragment returned by /api/listings/{id}/phone for lazy phone lookups. Either the
+   resolved contact panel (shown open) or a link-out fallback when no number exists. #}
+{% from "_macros.html" import contact_panel, contact_linkout %}
+{% if phone %}{{ contact_panel(phone, ext, price, address, source, source_url, hidden=False) }}{% else %}{{ contact_linkout(source, source_url) }}{% endif %}

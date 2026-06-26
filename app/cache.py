@@ -67,6 +67,16 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT NOT NULL
 );
 
+-- Lazily-resolved contact numbers (e.g. Zumper detail-page lookups), keyed by
+-- listing id. Never expires — phone numbers don't change. A row with an empty
+-- `phone` records a "looked up, none found" miss so we don't re-fetch.
+CREATE TABLE IF NOT EXISTS contact_cache (
+    id TEXT PRIMARY KEY,
+    phone TEXT NOT NULL,
+    phone_ext TEXT NOT NULL,
+    fetched_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_listings_scraped_at ON listings(scraped_at);
 CREATE INDEX IF NOT EXISTS idx_search_cache_created_at ON search_cache(created_at);
 """
@@ -279,3 +289,27 @@ async def get_new_ids(ids: list[str]) -> set[str]:
         ) as cursor:
             rows = await cursor.fetchall()
     return {r[0] for r in rows}
+
+
+# --- Lazily-resolved contact numbers ----------------------------------------
+
+async def get_contact(listing_id: str) -> Optional[tuple[Optional[str], Optional[str]]]:
+    """Return a cached (phone, ext) for a listing, or None if never looked up.
+    A looked-up miss is returned as (None, None) so callers skip a re-fetch."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT phone, phone_ext FROM contact_cache WHERE id = ?", (listing_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+    if row is None:
+        return None
+    return (row[0] or None, row[1] or None)
+
+
+async def save_contact(listing_id: str, phone: Optional[str], phone_ext: Optional[str]) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO contact_cache (id, phone, phone_ext, fetched_at) VALUES (?, ?, ?, ?)",
+            (listing_id, phone or "", phone_ext or "", datetime.utcnow().isoformat()),
+        )
+        await db.commit()

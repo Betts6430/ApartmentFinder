@@ -121,7 +121,7 @@ class SearchFilters(BaseModel):
         """All scrapers pull the full Edmonton listing pool — there's one cache entry,
         not one per filter combination. Filters are applied to the cached pool in-memory.
         """
-        return "edmonton:pool:v5"
+        return "edmonton:pool:v6"
 
 
 class Listing(BaseModel):
@@ -145,9 +145,12 @@ class Listing(BaseModel):
     lat: Optional[float] = None
     lng: Optional[float] = None
 
-    # Contact number (digits only), when the source exposes one. RentFaster does;
-    # Rentals.ca / Zumper gate contact behind on-site forms, so it's None there.
+    # Contact number, when the source exposes one (digits only; `phone_ext` holds
+    # any extension for call-center / property-manager numbers). RentFaster and
+    # Rentals.ca expose direct numbers in their search feed; for Zumper the number
+    # lives on the detail page and is fetched lazily on demand (see main.py).
     phone: Optional[str] = None
+    phone_ext: Optional[str] = None
 
     pets_allowed: Optional[bool] = None
     parking: Optional[bool] = None

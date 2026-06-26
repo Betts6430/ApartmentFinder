@@ -14,30 +14,48 @@
   {% if new_ids and l.id in new_ids %}<span class="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-emerald-500 text-white">New</span>{% endif %}
 {% endmacro %}
 
-{# Contact affordance. RentFaster exposes a phone number, so the primary button
-   opens a panel with the number, a pre-written availability/viewing message,
-   tel/sms links and a copy button. Other sources gate contact behind their own
-   forms, so we render a secondary button that links out. #}
+{# The expanded contact panel: formatted number (with optional extension), a
+   pre-written availability/viewing message, tel/sms links and a copy button.
+   Rendered server-side for listings whose number we already have, and rendered
+   on its own (by the /api/listings/{id}/phone endpoint) for lazily-resolved ones,
+   so the markup lives in exactly one place. #}
+{% macro contact_panel(phone, ext, price, address, source, source_url, hidden=False) %}
+  {% set d = phone %}
+  {% set tel = ('+1' ~ d) if d|length == 10 else (('+' ~ d) if d|length == 11 else d) %}
+  {% set telfull = (tel ~ ',' ~ ext) if ext else tel %}
+  {% set where = (' at ' ~ address) if address else '' %}
+  {% set msg = "Hi! I saw your listing" ~ where ~ " for $" ~ "{:,.0f}".format(price) ~ "/mo on " ~ source ~ " — is it still available? I'd love to book a viewing." %}
+  <div class="contact-panel {{ 'hidden ' if hidden }}mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs space-y-2">
+    <a href="tel:{{ telfull }}" class="block font-medium text-blue-600 hover:underline">{% if d|length == 10 %}({{ d[:3] }}) {{ d[3:6] }}-{{ d[6:] }}{% elif d|length == 11 %}{{ d[0] }} ({{ d[1:4] }}) {{ d[4:7] }}-{{ d[7:] }}{% else %}{{ d }}{% endif %}{% if ext %} ext. {{ ext }}{% endif %}</a>
+    <textarea readonly rows="3" class="contact-msg w-full resize-none rounded-md border border-slate-200 bg-white p-1.5 text-slate-700">{{ msg }}</textarea>
+    <div class="flex flex-wrap gap-1.5">
+      <a href="sms:{{ tel }}?&body={{ msg | urlencode }}" class="px-2.5 py-1 rounded-md bg-blue-600 text-white font-medium hover:bg-blue-700">Text</a>
+      <button type="button" class="copy-msg px-2.5 py-1 rounded-md border border-slate-300 bg-white font-medium hover:bg-slate-100">Copy</button>
+      <a href="{{ source_url }}" target="_blank" rel="noopener" class="px-2.5 py-1 rounded-md border border-slate-300 bg-white font-medium hover:bg-slate-100">View</a>
+    </div>
+  </div>
+{% endmacro %}
+
+{# Link-out fallback button for listings with no usable number. #}
+{% macro contact_linkout(source, source_url) %}
+  <a href="{{ source_url }}" target="_blank" rel="noopener" class="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 text-sm font-medium hover:bg-slate-50 transition-colors">Contact on {{ source }} →</a>
+{% endmacro %}
+
+{# Contact affordance, three cases:
+   - number known          → primary "Contact" button toggling the panel.
+   - Zumper, number on detail page → "Show phone number" button; JS hits
+     /api/listings/{id}/phone, which returns the panel (or a link-out) to swap in.
+   - otherwise             → plain link-out. #}
 {% macro contact_block(l) %}
   {% if l.phone %}
-    {% set d = l.phone %}
-    {% set tel = ('+1' ~ d) if d|length in (10, 11) else d %}
-    {% set where = (' at ' ~ l.address) if l.address else '' %}
-    {% set msg = "Hi! I saw your listing" ~ where ~ " for $" ~ "{:,.0f}".format(l.price) ~ "/mo on " ~ l.source ~ " — is it still available? I'd love to book a viewing." %}
     <div>
       <button type="button" class="contact-toggle inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors" aria-expanded="false">Contact</button>
-      <div class="contact-panel hidden mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs space-y-2">
-        <a href="tel:{{ tel }}" class="block font-medium text-blue-600 hover:underline">{% if d|length == 10 %}({{ d[:3] }}) {{ d[3:6] }}-{{ d[6:] }}{% elif d|length == 11 %}{{ d[0] }} ({{ d[1:4] }}) {{ d[4:7] }}-{{ d[7:] }}{% else %}{{ d }}{% endif %}</a>
-        <textarea readonly rows="3" class="contact-msg w-full resize-none rounded-md border border-slate-200 bg-white p-1.5 text-slate-700">{{ msg }}</textarea>
-        <div class="flex flex-wrap gap-1.5">
-          <a href="sms:{{ tel }}?&body={{ msg | urlencode }}" class="px-2.5 py-1 rounded-md bg-blue-600 text-white font-medium hover:bg-blue-700">Text</a>
-          <button type="button" class="copy-msg px-2.5 py-1 rounded-md border border-slate-300 bg-white font-medium hover:bg-slate-100">Copy</button>
-          <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="px-2.5 py-1 rounded-md border border-slate-300 bg-white font-medium hover:bg-slate-100">View</a>
-        </div>
-      </div>
+      {{ contact_panel(l.phone, l.phone_ext, l.price, l.address, l.source, l.source_url, hidden=True) }}
     </div>
+  {% elif l.source == 'zumper' %}
+    <button type="button" data-id="{{ l.id }}" class="phone-fetch inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-60">Show phone number</button>
   {% else %}
-    <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 text-sm font-medium hover:bg-slate-50 transition-colors">Contact on {{ l.source }} →</a>
+    {{ contact_linkout(l.source, l.source_url) }}
   {% endif %}
 {% endmacro %}
 

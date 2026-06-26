@@ -13,6 +13,8 @@ from fastapi.templating import Jinja2Templates
 from app import cache
 from app.config import settings
 from app.models import PropertyType, SearchFilters, SortBy
+from app.scrapers.base import normalize_phone
+from app.scrapers.zumper import fetch_listing_phone
 from app.services.search import run_search
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -210,6 +212,37 @@ async def toggle_favorite(id: str = Form(...)) -> JSONResponse:
         return JSONResponse({"favorited": False, "error": "listing not found"}, status_code=404)
     await cache.add_favorite(found[0])
     return JSONResponse({"favorited": True})
+
+
+@app.get("/api/listings/{listing_id}/phone", response_class=HTMLResponse)
+async def listing_phone(listing_id: str) -> HTMLResponse:
+    """Lazily resolve a listing's contact number (currently Zumper, whose number
+    lives on the per-listing detail page) and return the contact panel HTML to
+    swap in. Results — including misses — are cached forever, so repeat clicks
+    and re-renders are instant and we never re-hit the source for the same id."""
+    found = await cache.get_listings([listing_id])
+    if not found:
+        return HTMLResponse("Listing not found", status_code=404)
+    listing = found[0]
+
+    cached = await cache.get_contact(listing_id)
+    if cached is not None:
+        phone, ext = cached
+    else:
+        raw = None
+        if listing.source == "zumper":
+            raw = await fetch_listing_phone(listing.source_url)
+        phone, ext = normalize_phone(raw)
+        await cache.save_contact(listing_id, phone, ext)
+
+    return templates.get_template("_contact_panel.html").render(
+        phone=phone,
+        ext=ext,
+        price=listing.price,
+        address=listing.address,
+        source=listing.source,
+        source_url=listing.source_url,
+    )
 
 
 @app.get("/favorites", response_class=HTMLResponse)

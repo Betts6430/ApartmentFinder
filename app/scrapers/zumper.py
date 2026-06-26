@@ -112,6 +112,10 @@ def _parse_node(node: dict[str, Any]) -> Optional[Listing]:
         raw_pets = node.get("pets")
         pets_allowed: Optional[bool] = None if raw_pets is None else bool(raw_pets)
 
+        # The search feed only carries `phone` for a small minority of listings;
+        # the rest are resolved lazily from the detail page (see fetch_listing_phone).
+        _phone, _phone_ext = normalize_phone(node.get("phone"))
+
         return Listing(
             id=_stable_id("zumper", lid),
             source="zumper",
@@ -128,7 +132,7 @@ def _parse_node(node: dict[str, Any]) -> Optional[Listing]:
             postal_code=str(node.get("zipcode") or "").strip() or None,
             lat=float(node["lat"]) if node.get("lat") is not None else None,
             lng=float(node["lng"]) if node.get("lng") is not None else None,
-            phone=normalize_phone(node.get("phone")),
+            phone=_phone, phone_ext=_phone_ext,
             pets_allowed=pets_allowed,
             parking=_amenity_present(all_tags, _AMENITY_KEYWORDS["parking"]),
             in_suite_laundry=_amenity_present(all_tags, _AMENITY_KEYWORDS["in_suite_laundry"]),
@@ -142,6 +146,36 @@ def _parse_node(node: dict[str, Any]) -> Optional[Listing]:
         )
     except Exception as e:
         log.warning("zumper parse error for id=%s: %s", node.get("listing_id"), e)
+        return None
+
+
+def _extract_detail_phone(state: dict[str, Any]) -> Optional[str]:
+    """Pull the contact number out of a Zumper *detail* page's preloaded state.
+    It lives at detail.entity.data.agents[].phone (often the agent's direct line)."""
+    try:
+        data = state.get("detail", {}).get("entity", {}).get("data", {}) or {}
+        for agent in data.get("agents") or []:
+            if agent.get("phone"):
+                return str(agent["phone"])
+    except Exception:
+        pass
+    return None
+
+
+async def fetch_listing_phone(source_url: str, impersonate: str = "chrome124") -> Optional[str]:
+    """Fetch a single Zumper detail page and return its raw contact number (or None).
+    Used for lazy, on-demand phone lookup so the bulk scrape stays fast."""
+    def _do() -> Optional[str]:
+        with cr.Session(impersonate=impersonate) as s:
+            r = s.get(source_url, timeout=25)
+            r.raise_for_status()
+        state = _extract_state(r.text)
+        return _extract_detail_phone(state) if state else None
+
+    try:
+        return await asyncio.to_thread(_do)
+    except Exception as e:
+        log.warning("zumper detail phone fetch failed for %s: %s", source_url, e)
         return None
 
 

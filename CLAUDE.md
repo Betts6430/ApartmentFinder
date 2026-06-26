@@ -52,7 +52,7 @@ app/
   models.py          PropertyType/SortBy enums; SearchFilters + Listing models; Listing.matches();
                      normalize_address() + address field validator (one house style)
   cache.py           SQLite cache: listings, search_cache, transit_cache, geocode_cache,
-                     favorites, listing_seen, meta
+                     favorites, listing_seen, meta, contact_cache
   scrapers/
     base.py          Scraper ABC
     __init__.py      SCRAPERS registry (RentFaster, RentalsCa, Zumper)
@@ -66,7 +66,8 @@ app/
   templates/         base.html (header + "Saved" nav + global delegated JS for hearts/contact/copy),
                      index.html (search form + autocomplete), results.html (Grid/List/Map views,
                      pagination), favorites.html (saved listings), _macros.html (shared card/row +
-                     fav_button / new_badge / contact_block / specs / amenities_str)
+                     fav_button / new_badge / contact_block / contact_panel / specs / amenities_str),
+                     _contact_panel.html (fragment returned by the lazy phone endpoint)
   static/            (empty; mounted at /static)
 data/cache.db        SQLite cache (gitignored)
 run.sh, requirements.txt
@@ -79,19 +80,23 @@ run.sh, requirements.txt
 - `GET /favorites` — saved-listings page
 - `POST /api/favorites/toggle` (form `id`) — toggle a listing's saved state; returns
   `{"favorited": bool}`. Snapshots the listing on save (see below).
+- `GET /api/listings/{id}/phone` — lazily resolve a listing's contact number (Zumper:
+  fetch its detail page) and return the rendered contact-panel HTML (or a link-out
+  fallback) to swap in. Result cached forever in `contact_cache` (misses too).
 - `GET /api/places/autocomplete?q=` — **backend proxy** to Places API (New) for the
   location autocomplete; returns `{"suggestions": [str, ...]}`. Key stays server-side.
 
 ## Key architecture decisions
 
 - **Single pool cache key.** The whole scraped Edmonton pool is cached under ONE
-  constant key (`edmonton:pool:v5`, see `SearchFilters.scrape_cache_key()`), NOT
+  constant key (`edmonton:pool:v6`, see `SearchFilters.scrape_cache_key()`), NOT
   per filter combo. Filters run in-memory against the cached pool. So only the
   first scrape is slow (~3–10s); later searches with different filters are <200ms.
   TTL = `SEARCH_CACHE_TTL_HOURS` (default 3h). **Bump the `vN` suffix whenever the
   shape/processing of the cached pool changes** (e.g. dedupe added at v2; proximity
   dedupe + sqft sanitizing at v3; `phone` field at v4; phone for Rentals.ca/Zumper
-  at v5) so stale pools get re-scraped instead of waiting out the TTL.
+  at v5; `phone_ext` field at v6) so stale pools get re-scraped instead of waiting
+  out the TTL.
 - **Cross-source dedupe.** The same posting often appears on multiple sites. After
   the per-`id` dedupe, `_scrape_all` collapses these via `_dedupe_cross_source`
   (`services/search.py`) **before caching**, so the cached pool is already clean.
@@ -109,20 +114,31 @@ run.sh, requirements.txt
 - **Square footage is sanitized** at scrape time via `scrapers/base.sane_sqft`:
   values outside 50–50000 sqft (e.g. Zumper's int64 `9223372036854775807`
   "unknown" sentinel, or a stray `1`) become `None` rather than displaying as junk.
-- **Contact button.** `Listing.phone` (digits only, via `scrapers/base.normalize_phone`
-  — accepts only 10/11-digit NANP numbers, so call-center numbers carrying an `ext.`
-  are dropped) is captured when a source exposes a number. **RentFaster** (~95% of
-  its listings) and **Rentals.ca** (~30%, in `node.contact.phoneNumber`) provide
-  usable direct numbers; **Zumper** exposes `node.phone` too but in practice only
-  toll-free call-center numbers with extensions, which get rejected, so it yields
-  ~none. The `contact_block` Jinja macro (now in `_macros.html`)
-  renders, per listing: for phone listings a primary **Contact** button that opens
-  a panel with the formatted number (`tel:`/`sms:` links), a pre-written
-  availability + viewing-request message, and a "Copy" button (the desktop path,
-  since `sms:` is mobile-only); for the rest, a secondary "Contact on {source} →"
-  button that links out. No messages are ever sent automatically — it only
-  drafts/opens; the user sends. The click handlers (panel toggle + copy) are
-  **global delegated listeners in `base.html`**, shared by results + favorites.
+- **Contact button.** `scrapers/base.normalize_phone` parses a raw number into
+  `(Listing.phone, Listing.phone_ext)` — a 10/11-digit NANP base plus any leftover
+  digits as an extension, so call-center / property-manager numbers like
+  "(844) 332-5934 ext. 4525" are kept (not dropped). **RentFaster** (~95%) and
+  **Rentals.ca** (~30%, `node.contact.phoneNumber`) expose the number in their
+  search feed, so it's captured at scrape time. **Zumper** almost never includes it
+  in the feed — the number lives on the per-listing **detail page**
+  (`detail.entity.data.agents[].phone`, often the agent's direct line), so it's
+  resolved **lazily on demand**: the contact button for a Zumper listing reads
+  "Show phone number" and, on click, hits `GET /api/listings/{id}/phone`, which
+  fetches+parses the detail page, caches the result forever in `contact_cache`
+  (misses included, as an empty `phone`, so we never re-fetch), and returns the
+  rendered panel (or link-out) HTML to swap in. This keeps the bulk scrape fast and
+  spends a request only on listings the user actually pursues (the *lazy on-click*
+  choice over eager per-page / bulk-on-scrape).
+  The panel markup lives in **one place** — the `contact_panel` Jinja macro in
+  `_macros.html`, rendered both server-side (behind a "Contact" toggle for
+  known-phone listings) and by the endpoint via the `_contact_panel.html` partial.
+  It shows the formatted number + extension (`tel:`/`sms:` links; ext becomes a
+  `tel:...,EXT` pause), a pre-written availability + viewing message, and a "Copy"
+  button (the desktop path, since `sms:` is mobile-only). Listings with no usable
+  number get a secondary "Contact on {source} →" link-out. No messages are ever
+  sent automatically — it only drafts/opens; the user sends. The click handlers
+  (panel toggle, copy, and the lazy phone-fetch) are **global delegated listeners
+  in `base.html`**, shared by results + favorites.
 - **Saved listings (favorites).** A ♡/♥ icon button on every card/row toggles
   `POST /api/favorites/toggle` (delegated JS in `base.html`). On save the **full
   listing is snapshotted** into the `favorites` table (`Listing.model_dump_json`),
@@ -231,8 +247,11 @@ filter-preserving sort/page nav; **List view** (`results.html`) alongside Grid/M
 (snapshotted) + **"New" badges**; **address normalization** (one house style via a
 model validator); listing UI cleanup (dropped repetitive titles, buttonified
 save/contact actions, compacted List view; shared rendering moved to `_macros.html`);
-**phone capture for Rentals.ca** (and Zumper, though it yields ~none) via shared
-`normalize_phone`, so the contact panel now appears for many more listings (v5 pool).
+**phone capture for Rentals.ca** via shared
+`normalize_phone`, so the contact panel now appears for many more listings;
+**lazy on-demand Zumper phone lookup** (detail-page fetch, cached in `contact_cache`)
+behind a "Show phone number" button; `normalize_phone` now keeps extensions
+(`phone_ext`), so call-center/PM numbers aren't dropped (v6 pool).
 
 ### Possible next steps (not started)
 - Cache `/api/places/autocomplete` responses (currently every keystroke-after-debounce

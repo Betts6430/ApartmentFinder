@@ -55,6 +55,24 @@
       } catch (_) {} finally { fav.disabled = false; }
       return;
     }
+    const pf = e.target.closest('.phone-fetch');
+    if (pf) {
+      // Lazily resolve a listing's number; the endpoint returns the contact panel
+      // (or a link-out fallback) which we swap in for the button.
+      const id = pf.dataset.id;
+      const orig = pf.textContent;
+      pf.disabled = true;
+      pf.textContent = 'Loading…';
+      try {
+        const r = await fetch('/api/listings/' + encodeURIComponent(id) + '/phone');
+        if (!r.ok) throw new Error('lookup failed');
+        pf.outerHTML = await r.text();
+      } catch (_) {
+        pf.textContent = orig;
+        pf.disabled = false;
+      }
+      return;
+    }
     const toggle = e.target.closest('.contact-toggle');
     if (toggle) {
       const panel = toggle.nextElementSibling;

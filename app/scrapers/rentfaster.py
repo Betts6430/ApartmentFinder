@@ -105,8 +105,8 @@ def _parse_listing(raw: dict[str, Any]) -> Optional[Listing]:
         if thumb:
             photos.append(thumb)
 
-        # Contact phone — digits only; accept only plausible NANP lengths.
-        phone = normalize_phone(raw.get("phone"))
+        # Contact phone — digits only (+ optional extension).
+        phone, phone_ext = normalize_phone(raw.get("phone"))
 
         cats = _to_int(raw.get("cats"))
         dogs = _to_int(raw.get("dogs"))
@@ -144,6 +144,7 @@ def _parse_listing(raw: dict[str, Any]) -> Optional[Listing]:
             lat=_to_float(raw.get("latitude")),
             lng=_to_float(raw.get("longitude")),
             phone=phone,
+            phone_ext=phone_ext,
             pets_allowed=pets_allowed,
             parking=_to_bool_pos(raw.get("parking_available")),
             in_suite_laundry=_to_bool_pos(raw.get("laundry_in_suite")),
