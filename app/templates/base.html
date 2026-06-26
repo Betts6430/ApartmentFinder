@@ -16,6 +16,7 @@
           <span class="block text-xs text-slate-400 -mt-0.5">Edmonton rentals</span>
         </span>
       </a>
+      <a href="/favorites" class="text-sm font-medium text-rose-600 hover:text-rose-700">♥ Saved</a>
     </div>
   </header>
   <main class="flex-1 mx-auto w-full max-w-6xl px-4 py-8">
@@ -26,5 +27,51 @@
       Aggregates RentFaster · Rentals.ca · Zumper. Personal use.
     </div>
   </footer>
+
+  <script>
+  // Global delegated handlers shared by results + favorites pages:
+  // save/unsave hearts, and the contact-owner panel toggle/copy.
+  document.addEventListener('click', async (e) => {
+    const fav = e.target.closest('.fav-btn');
+    if (fav) {
+      const id = fav.dataset.id;
+      fav.disabled = true;
+      try {
+        const r = await fetch('/api/favorites/toggle', { method: 'POST', body: new URLSearchParams({ id }) });
+        const data = await r.json();
+        const on = !!data.favorited;
+        document.querySelectorAll('.fav-btn[data-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]').forEach(b => {
+          b.textContent = on ? '♥' : '♡';
+          b.setAttribute('aria-pressed', on ? 'true' : 'false');
+          b.title = on ? 'Saved — click to remove' : 'Save listing';
+          b.classList.toggle('text-rose-500', on);
+          b.classList.toggle('text-slate-300', !on);
+          b.classList.toggle('hover:text-rose-400', !on);
+        });
+        if (!on && document.body.dataset.page === 'favorites') {
+          const c = fav.closest('.listing-card, .listing-row');
+          if (c) c.remove();
+        }
+      } catch (_) {} finally { fav.disabled = false; }
+      return;
+    }
+    const toggle = e.target.closest('.contact-toggle');
+    if (toggle) {
+      const panel = toggle.nextElementSibling;
+      const open = panel.classList.toggle('hidden') === false;
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      return;
+    }
+    const copy = e.target.closest('.copy-msg');
+    if (copy) {
+      const msg = copy.closest('.contact-panel').querySelector('.contact-msg').value;
+      navigator.clipboard.writeText(msg).then(() => {
+        const prev = copy.textContent;
+        copy.textContent = 'Copied!';
+        setTimeout(() => { copy.textContent = prev; }, 1500);
+      }).catch(() => {});
+    }
+  });
+  </script>
 </body>
 </html>

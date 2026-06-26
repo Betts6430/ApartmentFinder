@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% from "_macros.html" import card %}
+{% block title %}Saved — ApartmentFinder{% endblock %}
+{% block body_attrs %}data-page="favorites"{% endblock %}
+{% block content %}
+<div class="flex flex-wrap items-start justify-between gap-3 mb-4">
+  <h1 class="text-2xl font-semibold">{{ count }} saved listing{{ '' if count == 1 else 's' }}</h1>
+  <a href="/" class="text-blue-600 hover:underline text-sm whitespace-nowrap">← New search</a>
+</div>
+
+{% if listings %}
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+  {% for l in listings %}{{ card(l, favorite_ids, none) }}{% endfor %}
+</div>
+{% else %}
+<div class="bg-white border border-slate-200 rounded-xl p-8 text-center text-slate-500">
+  No saved listings yet. Tap the ♡ on any listing to save it here.
+  <a href="/" class="text-blue-600 hover:underline">Start a search.</a>
+</div>
+{% endif %}
+{% endblock %}

@@ -47,6 +47,26 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
     created_at TEXT NOT NULL
 );
 
+-- Saved listings. Stores a full snapshot so a favorite survives the pool cache
+-- expiring or the listing being delisted at the source.
+CREATE TABLE IF NOT EXISTS favorites (
+    id TEXT PRIMARY KEY,
+    payload TEXT NOT NULL,
+    favorited_at TEXT NOT NULL
+);
+
+-- First time each listing id was ever seen, for "new listing" badges.
+CREATE TABLE IF NOT EXISTS listing_seen (
+    id TEXT PRIMARY KEY,
+    first_seen TEXT NOT NULL
+);
+
+-- Small key/value store (scrape boundaries for new-listing detection, etc.).
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_listings_scraped_at ON listings(scraped_at);
 CREATE INDEX IF NOT EXISTS idx_search_cache_created_at ON search_cache(created_at);
 """
@@ -174,3 +194,88 @@ async def save_geocode(query: str, lat: float, lng: float, formatted: str = "") 
             (qn, lat, lng, formatted, datetime.utcnow().isoformat()),
         )
         await db.commit()
+
+
+# --- Favorites (saved listings) ---------------------------------------------
+
+async def add_favorite(listing: Listing) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO favorites (id, payload, favorited_at) VALUES (?, ?, ?)",
+            (listing.id, listing.model_dump_json(), datetime.utcnow().isoformat()),
+        )
+        await db.commit()
+
+
+async def remove_favorite(listing_id: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM favorites WHERE id = ?", (listing_id,))
+        await db.commit()
+
+
+async def get_favorite_ids() -> set[str]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id FROM favorites") as cursor:
+            rows = await cursor.fetchall()
+    return {r[0] for r in rows}
+
+
+async def is_favorite(listing_id: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT 1 FROM favorites WHERE id = ?", (listing_id,)) as cursor:
+            return await cursor.fetchone() is not None
+
+
+async def get_favorites() -> list[Listing]:
+    """Saved listings, most-recently-favorited first."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT payload FROM favorites ORDER BY favorited_at DESC"
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [Listing.model_validate_json(r[0]) for r in rows]
+
+
+# --- New-listing tracking ----------------------------------------------------
+
+async def record_scrape(ids: list[str]) -> None:
+    """Record a fresh scrape: stamp first-seen for any new ids, and advance the
+    scrape boundary so the just-appeared listings can be flagged as "new". The
+    boundary (`prev_scrape_at`) is the *previous* scrape time; nothing is flagged
+    on the very first scrape, avoiding a cold-start where everything looks new."""
+    now = datetime.utcnow().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT value FROM meta WHERE key = 'last_scrape_at'") as cur:
+            row = await cur.fetchone()
+        prev = row[0] if row else ""
+        await db.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('prev_scrape_at', ?)", (prev,)
+        )
+        if ids:
+            await db.executemany(
+                "INSERT OR IGNORE INTO listing_seen (id, first_seen) VALUES (?, ?)",
+                [(i, now) for i in ids],
+            )
+        await db.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('last_scrape_at', ?)", (now,)
+        )
+        await db.commit()
+
+
+async def get_new_ids(ids: list[str]) -> set[str]:
+    """Of the given ids, which first appeared since the previous scrape."""
+    if not ids:
+        return set()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT value FROM meta WHERE key = 'prev_scrape_at'") as cur:
+            row = await cur.fetchone()
+        prev = row[0] if row else ""
+        if not prev:
+            return set()
+        placeholders = ",".join("?" * len(ids))
+        async with db.execute(
+            f"SELECT id FROM listing_seen WHERE id IN ({placeholders}) AND first_seen > ?",
+            [*ids, prev],
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return {r[0] for r in rows}

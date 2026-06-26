@@ -1,34 +1,7 @@
 {% extends "base.html" %}
+{% from "_macros.html" import card, row %}
 {% block title %}Results — ApartmentFinder{% endblock %}
 {% block content %}
-
-{# Contact affordance. RentFaster exposes a phone number, so we show a panel with
-   the number, a pre-written availability/viewing message, tel/sms links and a copy
-   button. Other sources gate contact behind their own forms, so we just link out. #}
-{% macro contact_block(l) %}
-  {% if l.phone %}
-    {% set d = l.phone %}
-    {% set tel = ('+1' ~ d) if d|length == 11 else (('+1' ~ d) if d|length == 10 else d) %}
-    {% set where = (' at ' ~ l.address) if l.address else '' %}
-    {% set msg = "Hi! I saw your listing" ~ where ~ " for $" ~ "{:,.0f}".format(l.price) ~ "/mo on " ~ l.source ~ " — is it still available? I'd love to book a viewing." %}
-    <div>
-      <button type="button" class="contact-toggle inline-flex items-center gap-1 text-sm text-blue-600 hover:underline" aria-expanded="false">📞 Contact owner</button>
-      <div class="contact-panel hidden mt-2 rounded-md border border-slate-200 bg-slate-50 p-2.5 text-xs space-y-2">
-        <div>
-          <a href="tel:{{ tel }}" class="font-medium text-blue-600 hover:underline">{% if d|length == 10 %}({{ d[:3] }}) {{ d[3:6] }}-{{ d[6:] }}{% elif d|length == 11 %}{{ d[0] }} ({{ d[1:4] }}) {{ d[4:7] }}-{{ d[7:] }}{% else %}{{ d }}{% endif %}</a>
-        </div>
-        <textarea readonly rows="3" class="contact-msg w-full resize-none rounded border border-slate-200 bg-white p-1.5 text-slate-700">{{ msg }}</textarea>
-        <div class="flex flex-wrap gap-1.5">
-          <a href="sms:{{ tel }}?&body={{ msg | urlencode }}" class="px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700">Text</a>
-          <button type="button" class="copy-msg px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100">Copy message</button>
-          <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100">View listing</a>
-        </div>
-      </div>
-    </div>
-  {% else %}
-    <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="inline-block text-sm text-blue-600 hover:underline">Contact on {{ l.source }} →</a>
-  {% endif %}
-{% endmacro %}
 
 <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
   <div>
@@ -94,87 +67,11 @@
 {% endif %}
 
 <div id="grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-  {% for l in listings %}
-  <article
-    data-lat="{{ l.lat if l.lat is not none else '' }}"
-    data-lng="{{ l.lng if l.lng is not none else '' }}"
-    data-id="{{ l.id }}"
-    class="listing-card bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm flex flex-col">
-    {% if l.photos %}
-    <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="block aspect-[4/3] bg-slate-100">
-      <img src="{{ l.photos[0] }}" alt="" loading="lazy" class="w-full h-full object-cover" />
-    </a>
-    {% else %}
-    <div class="aspect-[4/3] bg-slate-100 flex items-center justify-center text-slate-400 text-sm">No photo</div>
-    {% endif %}
-    <div class="p-4 flex flex-col gap-2 flex-grow">
-      <div class="flex items-baseline justify-between gap-2">
-        <div class="text-lg font-semibold">${{ "{:,.0f}".format(l.price) }}<span class="text-sm font-normal text-slate-500">/mo</span></div>
-        <div class="text-xs uppercase tracking-wide text-slate-400">{{ l.source }}</div>
-      </div>
-      <div class="text-sm text-slate-700">
-        {{ l.bedrooms|int if l.bedrooms == l.bedrooms|int else l.bedrooms }} bd ·
-        {{ l.bathrooms|int if l.bathrooms == l.bathrooms|int else l.bathrooms }} ba
-        {% if l.sqft %} · {{ l.sqft }} sqft{% endif %}
-        · <span class="capitalize">{{ l.property_type.value }}</span>
-      </div>
-      <div class="text-sm text-slate-600 line-clamp-2">{{ l.title }}</div>
-      {% if l.address %}<div class="text-xs text-slate-500">{{ l.address }}{% if l.neighborhood %} · {{ l.neighborhood }}{% endif %}</div>{% endif %}
-
-      <div class="flex flex-wrap gap-1 mt-1">
-        {% if l.in_suite_laundry %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">Laundry</span>{% endif %}
-        {% if l.parking %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">Parking</span>{% endif %}
-        {% if l.dishwasher %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">Dishwasher</span>{% endif %}
-        {% if l.ac %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">A/C</span>{% endif %}
-        {% if l.balcony %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">Balcony</span>{% endif %}
-        {% if l.gym %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">Gym</span>{% endif %}
-        {% if l.pets_allowed %}<span class="text-xs px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded">Pets OK</span>{% endif %}
-      </div>
-
-      {% if l.transit_minutes is not none %}
-      <div class="text-xs text-emerald-700 font-medium mt-1">{{ l.transit_minutes|round|int }} min commute</div>
-      {% endif %}
-      <div class="mt-auto pt-2">{{ contact_block(l) }}</div>
-    </div>
-  </article>
-  {% endfor %}
+  {% for l in listings %}{{ card(l, favorite_ids, new_ids) }}{% endfor %}
 </div>
 
 <div id="list" class="hidden bg-white border border-slate-200 rounded-xl shadow-sm divide-y divide-slate-100 overflow-hidden">
-  {% for l in listings %}
-  <div class="listing-row flex gap-4 p-4 hover:bg-slate-50">
-    {% if l.photos %}
-    <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="hidden sm:block shrink-0 w-28 h-20 rounded-md overflow-hidden bg-slate-100">
-      <img src="{{ l.photos[0] }}" alt="" loading="lazy" class="w-full h-full object-cover" />
-    </a>
-    {% endif %}
-    <div class="min-w-0 flex-1 flex flex-col gap-1">
-      <div class="flex items-baseline justify-between gap-2">
-        <span class="text-lg font-semibold">${{ "{:,.0f}".format(l.price) }}<span class="text-sm font-normal text-slate-500">/mo</span></span>
-        <span class="text-xs uppercase tracking-wide text-slate-400 shrink-0">{{ l.source }}</span>
-      </div>
-      <div class="text-sm text-slate-700">
-        {{ l.bedrooms|int if l.bedrooms == l.bedrooms|int else l.bedrooms }} bd ·
-        {{ l.bathrooms|int if l.bathrooms == l.bathrooms|int else l.bathrooms }} ba
-        {% if l.sqft %} · {{ l.sqft }} sqft{% endif %}
-        · <span class="capitalize">{{ l.property_type.value }}</span>
-      </div>
-      <div class="text-sm text-slate-600 truncate">{{ l.title }}</div>
-      {% if l.address %}<div class="text-xs text-slate-500 truncate">{{ l.address }}{% if l.neighborhood %} · {{ l.neighborhood }}{% endif %}</div>{% endif %}
-      {% set amenities = [] %}
-      {% if l.in_suite_laundry %}{% set _ = amenities.append('Laundry') %}{% endif %}
-      {% if l.parking %}{% set _ = amenities.append('Parking') %}{% endif %}
-      {% if l.dishwasher %}{% set _ = amenities.append('Dishwasher') %}{% endif %}
-      {% if l.ac %}{% set _ = amenities.append('A/C') %}{% endif %}
-      {% if l.balcony %}{% set _ = amenities.append('Balcony') %}{% endif %}
-      {% if l.gym %}{% set _ = amenities.append('Gym') %}{% endif %}
-      {% if l.pets_allowed %}{% set _ = amenities.append('Pets OK') %}{% endif %}
-      {% if amenities %}<div class="text-xs text-slate-500">{{ amenities | join(' · ') }}</div>{% endif %}
-      {% if l.transit_minutes is not none %}<div class="text-xs text-emerald-700 font-medium">{{ l.transit_minutes|round|int }} min commute</div>{% endif %}
-      <div class="pt-0.5">{{ contact_block(l) }}</div>
-    </div>
-  </div>
-  {% endfor %}
+  {% for l in listings %}{{ row(l, favorite_ids, new_ids) }}{% endfor %}
 </div>
 
 {% if total_pages > 1 %}
@@ -200,26 +97,6 @@ function submitSearch(sort, page) {
   f.elements['page'].value = page;
   f.submit();
 }
-
-// Contact-owner panels: toggle open/closed, and copy the prewritten message.
-document.addEventListener('click', (e) => {
-  const toggle = e.target.closest('.contact-toggle');
-  if (toggle) {
-    const panel = toggle.nextElementSibling;
-    const open = panel.classList.toggle('hidden') === false;
-    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-    return;
-  }
-  const copy = e.target.closest('.copy-msg');
-  if (copy) {
-    const msg = copy.closest('.contact-panel').querySelector('.contact-msg').value;
-    navigator.clipboard.writeText(msg).then(() => {
-      const prev = copy.textContent;
-      copy.textContent = 'Copied!';
-      setTimeout(() => { copy.textContent = prev; }, 1500);
-    }).catch(() => {});
-  }
-});
 </script>
 
 <script>

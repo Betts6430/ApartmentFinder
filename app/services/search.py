@@ -141,6 +141,8 @@ async def run_search(filters: SearchFilters) -> SearchResult:
         listings = await _scrape_all(filters)
         if listings:
             await cache.save_search(key, listings)
+            # Stamp first-seen / advance the scrape boundary for new-listing badges.
+            await cache.record_scrape([l.id for l in listings])
     else:
         log.info("scrape-pool cache hit (%d listings)", len(listings))
 

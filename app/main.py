@@ -173,6 +173,10 @@ async def search(
     start = (cur_page - 1) * PAGE_SIZE
     page_listings = listings[start : start + PAGE_SIZE]
 
+    page_ids = [l.id for l in page_listings]
+    favorite_ids = await cache.get_favorite_ids()
+    new_ids = await cache.get_new_ids(page_ids)
+
     return templates.TemplateResponse(
         "results.html",
         {
@@ -188,5 +192,36 @@ async def search(
             "page_size": PAGE_SIZE,
             "page_start": start,
             "page_end": start + len(page_listings),
+            "favorite_ids": favorite_ids,
+            "new_ids": new_ids,
+        },
+    )
+
+
+@app.post("/api/favorites/toggle")
+async def toggle_favorite(id: str = Form(...)) -> JSONResponse:
+    """Toggle a listing's saved state. Snapshots the listing on save so it
+    survives the pool cache expiring or the listing being delisted."""
+    if await cache.is_favorite(id):
+        await cache.remove_favorite(id)
+        return JSONResponse({"favorited": False})
+    found = await cache.get_listings([id])
+    if not found:
+        return JSONResponse({"favorited": False, "error": "listing not found"}, status_code=404)
+    await cache.add_favorite(found[0])
+    return JSONResponse({"favorited": True})
+
+
+@app.get("/favorites", response_class=HTMLResponse)
+async def favorites(request: Request) -> HTMLResponse:
+    saved = await cache.get_favorites()
+    return templates.TemplateResponse(
+        "favorites.html",
+        {
+            "request": request,
+            "listings": saved,
+            "count": len(saved),
+            "favorite_ids": {l.id for l in saved},
+            "google_maps_api_key": settings.google_maps_api_key,
         },
     )
