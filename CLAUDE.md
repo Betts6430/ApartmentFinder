@@ -49,8 +49,10 @@ Then open **http://localhost:8000**. Stop with `pkill -f "uvicorn app.main:app"`
 app/
   main.py            FastAPI app + routes (see below)
   config.py          pydantic-settings; reads .env (GOOGLE_MAPS_API_KEY, CACHE_DIR, SEARCH_CACHE_TTL_HOURS)
-  models.py          PropertyType/SortBy enums; SearchFilters + Listing models; Listing.matches()
-  cache.py           SQLite cache: listings, search_cache, transit_cache, geocode_cache
+  models.py          PropertyType/SortBy enums; SearchFilters + Listing models; Listing.matches();
+                     normalize_address() + address field validator (one house style)
+  cache.py           SQLite cache: listings, search_cache, transit_cache, geocode_cache,
+                     favorites, listing_seen, meta
   scrapers/
     base.py          Scraper ABC
     __init__.py      SCRAPERS registry (RentFaster, RentalsCa, Zumper)
@@ -61,7 +63,10 @@ app/
     search.py        run_search(): cache -> scrape -> filter -> transit enrich -> filter -> rank
     ranking.py       value/location/niceness scores + sort_listings()
     transit.py       geocode() + compute_transit() (Google Maps)
-  templates/         base.html, index.html (search form + autocomplete), results.html (Grid/List/Map views, pagination, contact button)
+  templates/         base.html (header + "Saved" nav + global delegated JS for hearts/contact/copy),
+                     index.html (search form + autocomplete), results.html (Grid/List/Map views,
+                     pagination), favorites.html (saved listings), _macros.html (shared card/row +
+                     fav_button / new_badge / contact_block / specs / amenities_str)
   static/            (empty; mounted at /static)
 data/cache.db        SQLite cache (gitignored)
 run.sh, requirements.txt
@@ -71,6 +76,9 @@ run.sh, requirements.txt
 ### Routes (`app/main.py`)
 - `GET /` — search form
 - `POST /search` — runs a search, returns results HTML
+- `GET /favorites` — saved-listings page
+- `POST /api/favorites/toggle` (form `id`) — toggle a listing's saved state; returns
+  `{"favorited": bool}`. Snapshots the listing on save (see below).
 - `GET /api/places/autocomplete?q=` — **backend proxy** to Places API (New) for the
   location autocomplete; returns `{"suggestions": [str, ...]}`. Key stays server-side.
 
@@ -103,12 +111,34 @@ run.sh, requirements.txt
   "unknown" sentinel, or a stray `1`) become `None` rather than displaying as junk.
 - **Contact button.** `Listing.phone` (digits only) is captured when a source
   exposes a number — **only RentFaster does**; Rentals.ca / Zumper gate contact
-  behind on-site forms. The `contact_block` Jinja macro in `results.html` renders,
-  per listing: for phone listings a togglable panel with the formatted number
-  (`tel:`/`sms:` links), a pre-written availability + viewing-request message, and
-  a "Copy message" button (the desktop path, since `sms:` is mobile-only); for the
-  rest, a plain "Contact on {source} →" link out to the listing. No messages are
-  ever sent automatically — it only drafts/opens; the user sends.
+  behind on-site forms. The `contact_block` Jinja macro (now in `_macros.html`)
+  renders, per listing: for phone listings a primary **Contact** button that opens
+  a panel with the formatted number (`tel:`/`sms:` links), a pre-written
+  availability + viewing-request message, and a "Copy" button (the desktop path,
+  since `sms:` is mobile-only); for the rest, a secondary "Contact on {source} →"
+  button that links out. No messages are ever sent automatically — it only
+  drafts/opens; the user sends. The click handlers (panel toggle + copy) are
+  **global delegated listeners in `base.html`**, shared by results + favorites.
+- **Saved listings (favorites).** A ♡/♥ icon button on every card/row toggles
+  `POST /api/favorites/toggle` (delegated JS in `base.html`). On save the **full
+  listing is snapshotted** into the `favorites` table (`Listing.model_dump_json`),
+  so a favorite survives the pool cache expiring or the listing being delisted at
+  the source. `GET /favorites` renders the snapshots, newest-first. Toggling off on
+  the favorites page removes the card from the DOM client-side.
+- **"New" listing badges.** `cache.record_scrape()` (called by `run_search` after a
+  fresh scrape) stamps first-seen times in `listing_seen` and advances a scrape
+  boundary in the `meta` k/v table; `get_new_ids()` flags listings first seen since
+  the **previous** scrape. Nothing is flagged on the very first scrape (avoids a
+  cold-start where everything looks new), and badges only appear on a fresh scrape,
+  not a cached-pool hit.
+- **Address normalization.** Sources spell addresses inconsistently
+  (`St`/`Street`/`ST`, `NW`/`Northwest`, ALL CAPS, ordinal `37th`). `normalize_address()`
+  + a `Listing` **field validator** (`models.py`) coerce one house style: street
+  types spelled out, uppercase quadrant abbreviations, ordinals stripped from
+  numbered streets, everything else Title Cased. Because it's a model validator it
+  runs on **every** `Listing` — fresh scrapes *and* ones re-loaded from cache /
+  favorites — so existing cached data displays consistently with **no re-scrape**.
+  Per-listing titles/blurbs are no longer shown (mostly repetitive boilerplate).
 - **Filters are optional.** `SearchFilters` fields are all `Optional`; `matches()`
   treats `None` as "don't filter on this." Empty form fields must map to `None`
   (see "blank field" note below).
@@ -179,11 +209,12 @@ running app must be restarted (or it auto-reloads) to pick up a new key.
 - `git push origin main` just works from this repo. Default branch is `main`.
 - `.gitignore` excludes `.env`, `.venv/`, `data/`, `.claude/settings.local.json`.
 
-## Status (as of 2026-06-24)
+## Status (as of 2026-06-25)
 
 Working: all three scrapers, pool caching, ranking, blank-field-tolerant search,
 commute filter (geocode + Distance Matrix), location autocomplete, cross-source
-dedupe, paginated results with Grid/List/Map views, and the contact button.
+dedupe, paginated results with Grid/List/Map views, the contact button, saved-listing
+favorites, "New" listing badges, and address normalization.
 
 Recent fixes: blank optional numeric fields no longer 422; Zumper unknown-pets bug;
 batched transit cache lookups; dead-code cleanup; location autocomplete;
@@ -192,14 +223,17 @@ card, logo header + footer in `base.html`); reject out-of-Edmonton geocodes (wit
 a results-page warning banner); **server-side pagination (60/page)** with
 filter-preserving sort/page nav; **List view** (`results.html`) alongside Grid/Map;
 **sqft sanitizing** + **proximity-based dedupe** (v4 pool); **contact button**
-(RentFaster phone → message draft; others link out).
+(RentFaster phone → message draft; others link out); **saved-listing favorites**
+(snapshotted) + **"New" badges**; **address normalization** (one house style via a
+model validator); listing UI cleanup (dropped repetitive titles, buttonified
+save/contact actions, compacted List view; shared rendering moved to `_macros.html`).
 
 ### Possible next steps (not started)
 - Cache `/api/places/autocomplete` responses (currently every keystroke-after-debounce
   hits Google; cheap but not free).
 - Apartments.com / Zillow scrapers (deferred — both Cloudflare-hard). Facebook
   Marketplace explicitly skipped per user.
-- Persist/share searches; saved-listing favorites.
+- Persist/share searches.
 - Consider Routes API migration only if legacy Distance Matrix gets sunset (mind the
   transit caveat above).
 ```
