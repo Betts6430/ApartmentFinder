@@ -52,7 +52,7 @@ app/
   models.py          PropertyType/SortBy enums; SearchFilters + Listing models; Listing.matches();
                      normalize_address() + address field validator (one house style)
   cache.py           SQLite cache: listings, search_cache, transit_cache, geocode_cache,
-                     favorites, listing_seen, meta, contact_cache, price_history
+                     favorites, listing_seen, meta, contact_cache, price_history, saved_searches
   scrapers/
     base.py          Scraper ABC
     __init__.py      SCRAPERS registry (RentFaster, RentalsCa, Zumper)
@@ -65,7 +65,8 @@ app/
     transit.py       geocode() + compute_transit() (Google Maps)
   templates/         base.html (header + "Saved" nav + global delegated JS for hearts/contact/copy),
                      index.html (search form + autocomplete), results.html (Grid/List/Map views,
-                     pagination), favorites.html (saved listings), _macros.html (shared card/row +
+                     pagination + Save-search), favorites.html (saved listings),
+                     searches.html (saved searches + new-match counts), _macros.html (shared card/row +
                      fav_button / new_badge / contact_block / contact_panel / specs / amenities_str),
                      _contact_panel.html (fragment returned by the lazy phone endpoint)
   static/            (empty; mounted at /static)
@@ -80,6 +81,10 @@ run.sh, requirements.txt
 - `GET /favorites` — saved-listings page
 - `POST /api/favorites/toggle` (form `id`) — toggle a listing's saved state; returns
   `{"favorited": bool}`. Snapshots the listing on save (see below).
+- `GET /searches` — saved-searches page (each with a new-match count)
+- `POST /api/searches` (form `name`, `filters` = SearchFilters JSON) — save a search
+- `GET /searches/{id}/open` — run a saved search (renders results.html) + mark viewed
+- `POST /searches/{id}/delete` — delete a saved search (303 redirect)
 - `GET /api/listings/{id}/phone` — lazily resolve a listing's contact number (Zumper:
   fetch its detail page) and return the rendered contact-panel HTML (or a link-out
   fallback) to swap in. Result cached forever in `contact_cache` (misses too).
@@ -165,6 +170,16 @@ run.sh, requirements.txt
   (`SortBy.PRICE_DROP`, ranks by `prev_price - price`) surfaces the biggest reductions.
   Drops only materialize once a price actually changes between two scrapes; the first
   scrape just seeds the baseline.
+- **Saved searches + new-match counts.** The results page serializes the active
+  `SearchFilters` (`filters_json`) into a `★ Save search` button that POSTs to
+  `/api/searches`; `cache.add_saved_search` stores the JSON in `saved_searches` with a
+  `last_viewed_at`. `GET /searches` lists them, and for each counts **new matches since
+  last viewed**: filter the cached pool by the saved filters (`matches`, non-transit —
+  transit counting would need per-search geocoding) and `cache.count_listing_seen_after`
+  the survivors against `last_viewed_at` (reusing `listing_seen.first_seen`). Opening a
+  search (`/searches/{id}/open`) runs it via the shared `_run_and_render` helper and
+  `touch_saved_search` resets the count. Saving stamps `last_viewed_at = now`, so a
+  fresh save shows 0 new (nothing is newer than the moment you saved).
 - **Address normalization.** Sources spell addresses inconsistently
   (`St`/`Street`/`ST`, `NW`/`Northwest`, ALL CAPS, ordinal `37th`). `normalize_address()`
   + a `Listing` **field validator** (`models.py`) coerce one house style: street
@@ -248,7 +263,8 @@ running app must be restarted (or it auto-reloads) to pick up a new key.
 Working: all three scrapers, pool caching, ranking, blank-field-tolerant search,
 commute filter (geocode + Distance Matrix), location autocomplete, cross-source
 dedupe, paginated results with Grid/List/Map views, the contact button, saved-listing
-favorites, "New" listing badges, address normalization, and price-drop tracking.
+favorites, "New" listing badges, address normalization, price-drop tracking, and
+saved searches with new-match counts.
 
 Recent fixes: blank optional numeric fields no longer 422; Zumper unknown-pets bug;
 batched transit cache lookups; dead-code cleanup; location autocomplete;
@@ -268,14 +284,15 @@ behind a "Show phone number" button; `normalize_phone` now keeps extensions
 (`phone_ext`), so call-center/PM numbers aren't dropped (v6 pool); contact panel,
 list-row, and view-toggle UI polish (send-icon button, image-height rows, icon
 toggles); **price-drop tracking** ("↓ $X" badge + "Price drops" sort via
-`price_history`).
+`price_history`); **saved searches** (named `SearchFilters` snapshots) with
+**new-match counts** since last viewed.
 
 ### Possible next steps (not started)
 - Cache `/api/places/autocomplete` responses (currently every keystroke-after-debounce
   hits Google; cheap but not free).
 - Apartments.com / Zillow scrapers (deferred — both Cloudflare-hard). Facebook
   Marketplace explicitly skipped per user.
-- Persist/share searches.
+- Email/push alerts for saved-search new matches (in-app counts exist; no notifications yet).
 - Consider Routes API migration only if legacy Distance Matrix gets sunset (mind the
   transit caveat above).
 ```

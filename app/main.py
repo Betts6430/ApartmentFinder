@@ -6,7 +6,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -159,6 +159,12 @@ async def search(
         transit_mode=transit_mode,
         sort_by=SortBy(sort_by),
     )
+    return await _run_and_render(request, filters, _opt_int(page) or 1)
+
+
+async def _run_and_render(request: Request, filters: SearchFilters, page: int) -> HTMLResponse:
+    """Run a search and render one paginated page of results. Shared by /search and
+    by opening a saved search."""
     result = await run_search(filters)
     listings = result.listings
 
@@ -171,7 +177,7 @@ async def search(
     # instead of shipping all ~1600 cards (and map markers) in a single response.
     total = len(listings)
     total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-    cur_page = min(max(_opt_int(page) or 1, 1), total_pages)
+    cur_page = min(max(page, 1), total_pages)
     start = (cur_page - 1) * PAGE_SIZE
     page_listings = listings[start : start + PAGE_SIZE]
 
@@ -184,6 +190,7 @@ async def search(
         {
             "request": request,
             "filters": filters,
+            "filters_json": filters.model_dump_json(),
             "listings": page_listings,
             "count": total,
             "source_counts": dict(sorted(source_counts.items(), key=lambda kv: -kv[1])),
@@ -259,3 +266,91 @@ async def favorites(request: Request) -> HTMLResponse:
             "google_maps_api_key": settings.google_maps_api_key,
         },
     )
+
+
+def _summarize_filters(f: SearchFilters) -> str:
+    """Short human-readable summary of a saved search's filters."""
+    parts: list[str] = []
+    if f.price_min is not None and f.price_max is not None:
+        parts.append(f"${f.price_min:,}–${f.price_max:,}")
+    elif f.price_min is not None:
+        parts.append(f"≥${f.price_min:,}")
+    elif f.price_max is not None:
+        parts.append(f"≤${f.price_max:,}")
+    if f.bedrooms_min is not None:
+        parts.append(f"{f.bedrooms_min}+ bd")
+    if f.bathrooms_min is not None:
+        parts.append(f"{f.bathrooms_min:g}+ ba")
+    if f.sqft_min is not None:
+        parts.append(f"{f.sqft_min:,}+ sqft")
+    if f.property_types:
+        parts.append(", ".join(pt.value.capitalize() for pt in f.property_types))
+    amen = [
+        name for flag, name in [
+            (f.pets_allowed, "Pets"), (f.parking, "Parking"), (f.in_suite_laundry, "Laundry"),
+            (f.furnished, "Furnished"), (f.dishwasher, "Dishwasher"), (f.ac, "A/C"),
+            (f.balcony, "Balcony"), (f.gym, "Gym"),
+        ] if flag
+    ]
+    if amen:
+        parts.append(" · ".join(amen))
+    if f.transit_target:
+        if f.transit_minutes_max is not None:
+            parts.append(f"{f.transit_target} ≤{f.transit_minutes_max} min")
+        else:
+            parts.append(f"near {f.transit_target}")
+    if f.move_in_by is not None:
+        parts.append(f"by {f.move_in_by.isoformat()}")
+    return " · ".join(parts) if parts else "Any listing"
+
+
+@app.post("/api/searches")
+async def save_search(name: str = Form(...), filters: str = Form(...)) -> JSONResponse:
+    """Persist the current search's filters under a name."""
+    try:
+        sf = SearchFilters.model_validate_json(filters)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid filters"}, status_code=400)
+    clean = name.strip()[:80] or "Untitled search"
+    search_id = await cache.add_saved_search(clean, sf)
+    return JSONResponse({"ok": True, "id": search_id})
+
+
+@app.get("/searches", response_class=HTMLResponse)
+async def searches(request: Request) -> HTMLResponse:
+    """List saved searches with a count of new matches since each was last viewed."""
+    saved = await cache.get_saved_searches()
+    pool = await cache.get_cached_search(SearchFilters.scrape_cache_key()) or []
+    items = []
+    for s in saved:
+        matching = [l for l in pool if l.matches(s["filters"], include_transit=False)]
+        new_count = await cache.count_listing_seen_after(
+            [l.id for l in matching], s["last_viewed_at"]
+        )
+        items.append({
+            "id": s["id"],
+            "name": s["name"],
+            "summary": _summarize_filters(s["filters"]),
+            "total": len(matching),
+            "new": new_count,
+        })
+    return templates.TemplateResponse(
+        "searches.html",
+        {"request": request, "searches": items, "pool_ready": bool(pool)},
+    )
+
+
+@app.get("/searches/{search_id}/open", response_class=HTMLResponse)
+async def open_search(request: Request, search_id: int) -> HTMLResponse:
+    """Run a saved search and mark it viewed (resetting its new-match count)."""
+    s = await cache.get_saved_search(search_id)
+    if not s:
+        return RedirectResponse("/searches", status_code=303)
+    await cache.touch_saved_search(search_id)
+    return await _run_and_render(request, s["filters"], 1)
+
+
+@app.post("/searches/{search_id}/delete")
+async def remove_search(search_id: int) -> RedirectResponse:
+    await cache.delete_saved_search(search_id)
+    return RedirectResponse("/searches", status_code=303)

@@ -15,7 +15,7 @@ from typing import Optional
 import aiosqlite
 
 from app.config import settings
-from app.models import Listing
+from app.models import Listing, SearchFilters
 
 DB_PATH = settings.cache_dir / "cache.db"
 
@@ -85,6 +85,16 @@ CREATE TABLE IF NOT EXISTS price_history (
     seen_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_price_history_id ON price_history(id);
+
+-- Saved searches: a named SearchFilters snapshot. `last_viewed_at` anchors the
+-- "new matches since you last looked" count.
+CREATE TABLE IF NOT EXISTS saved_searches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    filters TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_viewed_at TEXT NOT NULL
+);
 
 CREATE INDEX IF NOT EXISTS idx_listings_scraped_at ON listings(scraped_at);
 CREATE INDEX IF NOT EXISTS idx_search_cache_created_at ON search_cache(created_at);
@@ -393,3 +403,79 @@ async def get_price_drops(ids: list[str], within_days: int = 30) -> dict[str, fl
                     if cur_seen >= cutoff and prev_price > cur_price:
                         out[lid] = prev_price
     return out
+
+
+# --- Saved searches ----------------------------------------------------------
+
+async def add_saved_search(name: str, filters: SearchFilters) -> int:
+    now = datetime.utcnow().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "INSERT INTO saved_searches (name, filters, created_at, last_viewed_at) VALUES (?, ?, ?, ?)",
+            (name, filters.model_dump_json(), now, now),
+        )
+        await db.commit()
+        return cur.lastrowid
+
+
+def _row_to_saved(r) -> dict:
+    return {
+        "id": r[0],
+        "name": r[1],
+        "filters": SearchFilters.model_validate_json(r[2]),
+        "created_at": r[3],
+        "last_viewed_at": r[4],
+    }
+
+
+async def get_saved_searches() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id, name, filters, created_at, last_viewed_at FROM saved_searches ORDER BY created_at DESC"
+        ) as cur:
+            rows = await cur.fetchall()
+    return [_row_to_saved(r) for r in rows]
+
+
+async def get_saved_search(search_id: int) -> Optional[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id, name, filters, created_at, last_viewed_at FROM saved_searches WHERE id = ?",
+            (search_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    return _row_to_saved(row) if row else None
+
+
+async def delete_saved_search(search_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM saved_searches WHERE id = ?", (search_id,))
+        await db.commit()
+
+
+async def touch_saved_search(search_id: int) -> None:
+    """Mark a saved search as just-viewed, resetting its new-match count."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE saved_searches SET last_viewed_at = ? WHERE id = ?",
+            (datetime.utcnow().isoformat(), search_id),
+        )
+        await db.commit()
+
+
+async def count_listing_seen_after(ids: list[str], since: str) -> int:
+    """How many of the given listing ids were first seen strictly after `since` —
+    i.e. new matches since a saved search was last viewed."""
+    if not ids:
+        return 0
+    total = 0
+    async with aiosqlite.connect(DB_PATH) as db:
+        for i in range(0, len(ids), _SQLITE_MAX_VARS):
+            chunk = ids[i : i + _SQLITE_MAX_VARS]
+            ph = ",".join("?" * len(chunk))
+            async with db.execute(
+                f"SELECT COUNT(*) FROM listing_seen WHERE id IN ({ph}) AND first_seen > ?",
+                [*chunk, since],
+            ) as cur:
+                total += (await cur.fetchone())[0]
+    return total

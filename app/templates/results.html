@@ -14,8 +14,39 @@
     </div>
     {% endif %}
   </div>
-  <a href="/" class="text-blue-600 hover:underline text-sm whitespace-nowrap">← New search</a>
+  <div class="flex items-center gap-4 whitespace-nowrap">
+    <button type="button" id="saveSearchBtn" class="text-sm font-medium text-blue-600 hover:underline">★ Save search</button>
+    <a href="/" class="text-blue-600 hover:underline text-sm">← New search</a>
+  </div>
 </div>
+
+{# Current filters (for "Save search") + the save handler — present even with no results. #}
+<script type="application/json" id="filtersData">{{ filters_json | safe }}</script>
+<script>
+(function () {
+  const btn = document.getElementById('saveSearchBtn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const name = prompt('Name this search:', '');
+    if (name === null) return;  // cancelled
+    const filters = document.getElementById('filtersData').textContent;
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+    try {
+      const r = await fetch('/api/searches', {
+        method: 'POST',
+        body: new URLSearchParams({ name: name || 'Untitled search', filters }),
+      });
+      if (!r.ok) throw new Error();
+      btn.textContent = '✓ Saved';
+    } catch (_) {
+      btn.textContent = 'Save failed';
+    }
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1500);
+  });
+})();
+</script>
 
 {% for w in warnings %}
 <div class="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">{{ w }}</div>
