@@ -30,7 +30,7 @@
 
   <script>
   // Global delegated handlers shared by results + favorites pages:
-  // save/unsave hearts, and the contact-owner panel toggle/copy.
+  // save/unsave hearts, lazy phone lookup, and the contact-panel toggle.
   document.addEventListener('click', async (e) => {
     const fav = e.target.closest('.fav-btn');
     if (fav) {
@@ -57,16 +57,29 @@
     }
     const pf = e.target.closest('.phone-fetch');
     if (pf) {
-      // Lazily resolve a listing's number; the endpoint returns the contact panel
-      // (or a link-out fallback) which we swap in for the button.
+      // Lazily resolve a listing's number. On a hit the endpoint returns the contact
+      // panel (popover): drop it in next to the button and turn the button into a
+      // normal Contact toggle. On a miss it returns a link-out, which replaces the
+      // button outright.
       const id = pf.dataset.id;
+      const align = pf.dataset.align || 'left';
       const orig = pf.textContent;
       pf.disabled = true;
       pf.textContent = 'Loading…';
       try {
-        const r = await fetch('/api/listings/' + encodeURIComponent(id) + '/phone');
+        const r = await fetch('/api/listings/' + encodeURIComponent(id) + '/phone?align=' + align);
         if (!r.ok) throw new Error('lookup failed');
-        pf.outerHTML = await r.text();
+        const html = await r.text();
+        if (html.indexOf('contact-panel') !== -1) {
+          pf.insertAdjacentHTML('afterend', html);  // popover (shown) becomes next sibling
+          pf.classList.remove('phone-fetch');
+          pf.classList.add('contact-toggle');
+          pf.textContent = 'Contact';
+          pf.setAttribute('aria-expanded', 'true');
+          pf.disabled = false;
+        } else {
+          pf.outerHTML = html;  // no number — link-out fallback
+        }
       } catch (_) {
         pf.textContent = orig;
         pf.disabled = false;
@@ -79,15 +92,6 @@
       const open = panel.classList.toggle('hidden') === false;
       toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
       return;
-    }
-    const copy = e.target.closest('.copy-msg');
-    if (copy) {
-      const msg = copy.closest('.contact-panel').querySelector('.contact-msg').value;
-      navigator.clipboard.writeText(msg).then(() => {
-        const prev = copy.textContent;
-        copy.textContent = 'Copied!';
-        setTimeout(() => { copy.textContent = prev; }, 1500);
-      }).catch(() => {});
     }
   });
   </script>

@@ -14,24 +14,27 @@
   {% if new_ids and l.id in new_ids %}<span class="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-emerald-500 text-white">New</span>{% endif %}
 {% endmacro %}
 
-{# The expanded contact panel: formatted number (with optional extension), a
-   pre-written availability/viewing message, tel/sms links and a copy button.
-   Rendered server-side for listings whose number we already have, and rendered
-   on its own (by the /api/listings/{id}/phone endpoint) for lazily-resolved ones,
-   so the markup lives in exactly one place. #}
-{% macro contact_panel(phone, ext, price, address, source, source_url, hidden=False) %}
+{# The contact panel, shown as a floating popover anchored to its trigger button
+   (absolute, so it never changes the card/row height). Holds the formatted number
+   (with optional extension) and a pre-written availability/viewing message with a
+   single send-icon button in the corner that opens the SMS draft. Rendered
+   server-side for listings whose number we already have, and on its own (by the
+   /api/listings/{id}/phone endpoint) for lazily-resolved ones, so the markup lives
+   in exactly one place. `align` anchors the popover left (grid) or right (list). #}
+{% macro contact_panel(phone, ext, price, address, source, source_url, hidden=False, align='left') %}
   {% set d = phone %}
   {% set tel = ('+1' ~ d) if d|length == 10 else (('+' ~ d) if d|length == 11 else d) %}
   {% set telfull = (tel ~ ',' ~ ext) if ext else tel %}
   {% set where = (' at ' ~ address) if address else '' %}
   {% set msg = "Hi! I saw your listing" ~ where ~ " for $" ~ "{:,.0f}".format(price) ~ "/mo on " ~ source ~ " — is it still available? I'd love to book a viewing." %}
-  <div class="contact-panel {{ 'hidden ' if hidden }}mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs space-y-2">
+  <div class="contact-panel {{ 'hidden ' if hidden }}absolute z-30 top-full mt-2 {{ 'right-0' if align == 'right' else 'left-0' }} w-72 rounded-lg border border-slate-200 bg-white shadow-lg p-2.5 text-xs space-y-2">
     <a href="tel:{{ telfull }}" class="block font-medium text-blue-600 hover:underline">{% if d|length == 10 %}({{ d[:3] }}) {{ d[3:6] }}-{{ d[6:] }}{% elif d|length == 11 %}{{ d[0] }} ({{ d[1:4] }}) {{ d[4:7] }}-{{ d[7:] }}{% else %}{{ d }}{% endif %}{% if ext %} ext. {{ ext }}{% endif %}</a>
-    <textarea readonly rows="3" class="contact-msg w-full resize-none rounded-md border border-slate-200 bg-white p-1.5 text-slate-700">{{ msg }}</textarea>
-    <div class="flex flex-wrap gap-1.5">
-      <a href="sms:{{ tel }}?&body={{ msg | urlencode }}" class="px-2.5 py-1 rounded-md bg-blue-600 text-white font-medium hover:bg-blue-700">Text</a>
-      <button type="button" class="copy-msg px-2.5 py-1 rounded-md border border-slate-300 bg-white font-medium hover:bg-slate-100">Copy</button>
-      <a href="{{ source_url }}" target="_blank" rel="noopener" class="px-2.5 py-1 rounded-md border border-slate-300 bg-white font-medium hover:bg-slate-100">View</a>
+    <div class="relative">
+      <textarea readonly rows="3" class="contact-msg w-full resize-none rounded-md border border-slate-200 bg-white p-1.5 pr-10 text-slate-700">{{ msg }}</textarea>
+      <a href="sms:{{ tel }}?&body={{ msg | urlencode }}" title="Send message" aria-label="Send message"
+        class="absolute bottom-2 right-2 inline-flex items-center justify-center h-7 w-7 rounded-md bg-blue-600 text-white hover:bg-blue-700">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-4 w-4"><path d="M2.01 21 23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+      </a>
     </div>
   </div>
 {% endmacro %}
@@ -46,17 +49,17 @@
    - Zumper, number on detail page → "Show phone number" button; JS hits
      /api/listings/{id}/phone, which returns the panel (or a link-out) to swap in.
    - otherwise             → plain link-out. #}
-{% macro contact_block(l) %}
-  {% if l.phone %}
-    <div>
+{% macro contact_block(l, align='left') %}
+  <div class="contact-wrap relative inline-block text-left">
+    {% if l.phone %}
       <button type="button" class="contact-toggle inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors" aria-expanded="false">Contact</button>
-      {{ contact_panel(l.phone, l.phone_ext, l.price, l.address, l.source, l.source_url, hidden=True) }}
-    </div>
-  {% elif l.source == 'zumper' %}
-    <button type="button" data-id="{{ l.id }}" class="phone-fetch inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-60">Show phone number</button>
-  {% else %}
-    {{ contact_linkout(l.source, l.source_url) }}
-  {% endif %}
+      {{ contact_panel(l.phone, l.phone_ext, l.price, l.address, l.source, l.source_url, hidden=True, align=align) }}
+    {% elif l.source == 'zumper' %}
+      <button type="button" data-id="{{ l.id }}" data-align="{{ align }}" class="phone-fetch inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-60">Show phone number</button>
+    {% else %}
+      {{ contact_linkout(l.source, l.source_url) }}
+    {% endif %}
+  </div>
 {% endmacro %}
 
 {# Specs line, e.g. "2 bd · 1 ba · 750 sqft · Apartment". #}
@@ -86,13 +89,13 @@
     data-lat="{{ l.lat if l.lat is not none else '' }}"
     data-lng="{{ l.lng if l.lng is not none else '' }}"
     data-id="{{ l.id }}"
-    class="listing-card bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm flex flex-col">
+    class="listing-card bg-white border border-slate-200 rounded-xl shadow-sm flex flex-col">
     {% if l.photos %}
-    <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="block aspect-[4/3] bg-slate-100">
+    <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="block aspect-[4/3] bg-slate-100 rounded-t-xl overflow-hidden">
       <img src="{{ l.photos[0] }}" alt="" loading="lazy" class="w-full h-full object-cover" />
     </a>
     {% else %}
-    <div class="aspect-[4/3] bg-slate-100 flex items-center justify-center text-slate-400 text-sm">No photo</div>
+    <div class="aspect-[4/3] bg-slate-100 rounded-t-xl flex items-center justify-center text-slate-400 text-sm">No photo</div>
     {% endif %}
     <div class="p-4 flex flex-col gap-2 flex-grow">
       <div class="flex items-start justify-between gap-2">
@@ -123,16 +126,19 @@
   </article>
 {% endmacro %}
 
-{# List row — compact: price + specs on one line, address below, amenities/commute
-   muted, contact + save aligned right. #}
+{# List row — kept to the height of the thumbnail: info vertically centered in the
+   middle, save (top) and contact (bottom) right-aligned. The contact panel is a
+   popover, so opening it never grows the row. #}
 {% macro row(l, favorite_ids, new_ids) %}
-  <div class="listing-row flex items-start gap-3 px-4 py-3 hover:bg-slate-50">
+  <div class="listing-row flex items-stretch gap-3 px-4 py-2.5 hover:bg-slate-50">
     {% if l.photos %}
     <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="hidden sm:block shrink-0 w-24 h-16 rounded-md overflow-hidden bg-slate-100">
       <img src="{{ l.photos[0] }}" alt="" loading="lazy" class="w-full h-full object-cover" />
     </a>
+    {% else %}
+    <div class="hidden sm:flex shrink-0 w-24 h-16 rounded-md bg-slate-100 items-center justify-center text-slate-400 text-xs">No photo</div>
     {% endif %}
-    <div class="min-w-0 flex-1 flex flex-col gap-0.5">
+    <div class="min-w-0 flex-1 flex flex-col justify-center gap-0.5 overflow-hidden">
       <div class="flex items-baseline gap-2 min-w-0">
         <span class="text-base font-semibold whitespace-nowrap">${{ "{:,.0f}".format(l.price) }}<span class="text-xs font-normal text-slate-500">/mo</span></span>
         <span class="text-xs text-slate-600 truncate">{{ specs(l) }}</span>
@@ -146,11 +152,13 @@
         {% if l.transit_minutes is not none %}<span class="text-emerald-700 font-medium whitespace-nowrap">{{ l.transit_minutes|round|int }} min commute</span>{% endif %}
       </div>
       {% endif %}
-      <div class="pt-1">{{ contact_block(l) }}</div>
     </div>
-    <div class="shrink-0 self-start flex items-center gap-2">
-      <span class="text-xs uppercase tracking-wide text-slate-400">{{ l.source }}</span>
-      {{ fav_button(l, favorite_ids) }}
+    <div class="shrink-0 flex flex-col items-end justify-between gap-1">
+      <div class="flex items-center gap-2">
+        <span class="text-xs uppercase tracking-wide text-slate-400">{{ l.source }}</span>
+        {{ fav_button(l, favorite_ids) }}
+      </div>
+      {{ contact_block(l, align='right') }}
     </div>
   </div>
 {% endmacro %}

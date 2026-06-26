@@ -215,7 +215,7 @@ async def toggle_favorite(id: str = Form(...)) -> JSONResponse:
 
 
 @app.get("/api/listings/{listing_id}/phone", response_class=HTMLResponse)
-async def listing_phone(listing_id: str) -> HTMLResponse:
+async def listing_phone(listing_id: str, align: str = "left") -> HTMLResponse:
     """Lazily resolve a listing's contact number (currently Zumper, whose number
     lives on the per-listing detail page) and return the contact panel HTML to
     swap in. Results — including misses — are cached forever, so repeat clicks
@@ -242,6 +242,7 @@ async def listing_phone(listing_id: str) -> HTMLResponse:
         address=listing.address,
         source=listing.source,
         source_url=listing.source_url,
+        align="right" if align == "right" else "left",
     )
 
 

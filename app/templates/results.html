@@ -54,10 +54,16 @@
   </nav>
 
   <div class="flex gap-1 bg-white border border-slate-200 rounded-lg p-1 shadow-sm">
-    <button type="button" data-view="grid" class="view-btn px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white">Grid</button>
-    <button type="button" data-view="list" class="view-btn px-3 py-1.5 text-sm rounded-md text-slate-600 hover:bg-slate-100">List</button>
+    <button type="button" data-view="grid" title="Grid view" aria-label="Grid view" class="view-btn p-2 rounded-md bg-blue-600 text-white">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-5 w-5"><path d="M3 3h8v8H3V3zm10 0h8v8h-8V3zM3 13h8v8H3v-8zm10 0h8v8h-8v-8z"/></svg>
+    </button>
+    <button type="button" data-view="list" title="List view" aria-label="List view" class="view-btn p-2 rounded-md text-slate-600 hover:bg-slate-100">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-5 w-5"><path d="M3 5h18v2H3V5zm0 6h18v2H3v-2zm0 6h18v2H3v-2z"/></svg>
+    </button>
     {% if google_maps_api_key %}
-    <button type="button" data-view="map" class="view-btn px-3 py-1.5 text-sm rounded-md text-slate-600 hover:bg-slate-100">Map</button>
+    <button type="button" data-view="map" title="Map view" aria-label="Map view" class="view-btn p-2 rounded-md text-slate-600 hover:bg-slate-100">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="h-5 w-5"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg>
+    </button>
     {% endif %}
   </div>
 </div>
@@ -70,7 +76,7 @@
   {% for l in listings %}{{ card(l, favorite_ids, new_ids) }}{% endfor %}
 </div>
 
-<div id="list" class="hidden bg-white border border-slate-200 rounded-xl shadow-sm divide-y divide-slate-100 overflow-hidden">
+<div id="list" class="hidden bg-white border border-slate-200 rounded-xl shadow-sm divide-y divide-slate-100 [&>*:first-child]:rounded-t-xl [&>*:last-child]:rounded-b-xl">
   {% for l in listings %}{{ row(l, favorite_ids, new_ids) }}{% endfor %}
 </div>
 

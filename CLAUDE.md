@@ -132,13 +132,16 @@ run.sh, requirements.txt
   The panel markup lives in **one place** — the `contact_panel` Jinja macro in
   `_macros.html`, rendered both server-side (behind a "Contact" toggle for
   known-phone listings) and by the endpoint via the `_contact_panel.html` partial.
-  It shows the formatted number + extension (`tel:`/`sms:` links; ext becomes a
-  `tel:...,EXT` pause), a pre-written availability + viewing message, and a "Copy"
-  button (the desktop path, since `sms:` is mobile-only). Listings with no usable
-  number get a secondary "Contact on {source} →" link-out. No messages are ever
-  sent automatically — it only drafts/opens; the user sends. The click handlers
-  (panel toggle, copy, and the lazy phone-fetch) are **global delegated listeners
-  in `base.html`**, shared by results + favorites.
+  It's a **floating popover** (absolute, so opening it never grows the card/row;
+  the macro's `align` arg anchors it left for grid, right for list — and the
+  card/list containers drop `overflow-hidden` so it isn't clipped). It shows the
+  formatted number + extension (`tel:` link; ext becomes a `tel:...,EXT` pause) and
+  a pre-written availability + viewing message with a single **send-icon** button
+  in the textarea corner that opens the `sms:` draft. Listings with no usable number
+  get a secondary "Contact on {source} →" link-out. No messages are ever sent
+  automatically — it only drafts/opens; the user sends. The click handlers (panel
+  toggle and the lazy phone-fetch) are **global delegated listeners in `base.html`**,
+  shared by results + favorites.
 - **Saved listings (favorites).** A ♡/♥ icon button on every card/row toggles
   `POST /api/favorites/toggle` (delegated JS in `base.html`). On save the **full
   listing is snapshotted** into the `favorites` table (`Listing.model_dump_json`),
