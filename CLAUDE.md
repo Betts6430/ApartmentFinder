@@ -5,7 +5,7 @@ Context for Claude Code sessions on this project. Read this first.
 ## What this is
 
 A **personal-use, Edmonton-focused rental aggregator**. It scrapes RentFaster,
-Rentals.ca, and Zumper on demand, normalizes the listings, applies in-memory
+Rentals.ca, Zumper, and Kijiji on demand, normalizes the listings, applies in-memory
 filters, ranks them three ways (Best Value / Best Location / Nicest Places), and
 optionally filters/ranks by **commute time** to a location (e.g. University of
 Alberta) via Google Maps.
@@ -59,6 +59,7 @@ app/
     rentfaster.py    public map.json endpoint (structured JSON)
     rentals_ca.py    scrapes inline `App.store.search = {response: {...}}` JSON, paginates
     zumper.py        scrapes inline `window.__PRELOADED_STATE__` JSON, paginates
+    kijiji.py        scrapes inline `__NEXT_DATA__` Apollo cache (RealEstateListing), paginates
   services/
     search.py        run_search(): cache -> scrape -> filter -> transit enrich -> filter -> rank
     ranking.py       value/location/niceness scores + sort_listings()
@@ -94,14 +95,14 @@ run.sh, requirements.txt
 ## Key architecture decisions
 
 - **Single pool cache key.** The whole scraped Edmonton pool is cached under ONE
-  constant key (`edmonton:pool:v6`, see `SearchFilters.scrape_cache_key()`), NOT
+  constant key (`edmonton:pool:v7`, see `SearchFilters.scrape_cache_key()`), NOT
   per filter combo. Filters run in-memory against the cached pool. So only the
   first scrape is slow (~3–10s); later searches with different filters are <200ms.
   TTL = `SEARCH_CACHE_TTL_HOURS` (default 3h). **Bump the `vN` suffix whenever the
   shape/processing of the cached pool changes** (e.g. dedupe added at v2; proximity
   dedupe + sqft sanitizing at v3; `phone` field at v4; phone for Rentals.ca/Zumper
-  at v5; `phone_ext` field at v6) so stale pools get re-scraped instead of waiting
-  out the TTL.
+  at v5; `phone_ext` field at v6; Kijiji source added at v7) so stale pools get
+  re-scraped instead of waiting out the TTL.
 - **Cross-source dedupe.** The same posting often appears on multiple sites. After
   the per-`id` dedupe, `_scrape_all` collapses these via `_dedupe_cross_source`
   (`services/search.py`) **before caching**, so the cached pool is already clean.
@@ -119,6 +120,16 @@ run.sh, requirements.txt
 - **Square footage is sanitized** at scrape time via `scrapers/base.sane_sqft`:
   values outside 50–50000 sqft (e.g. Zumper's int64 `9223372036854775807`
   "unknown" sentinel, or a stray `1`) become `None` rather than displaying as junk.
+- **Kijiji scraper quirks.** `kijiji.py` reads the `__NEXT_DATA__` Apollo cache
+  (`RealEstateListing` entries) from the Edmonton apartments-condos category
+  (`c37l1700203` — its feed mixes in house/townhouse/duplex unit types too, ~1700
+  listings). Decode gotchas, all handled in `_parse_listing`: `price.amount` is in
+  **cents** (÷100), `numberbathrooms` is encoded **×10** ("15"→1.5 baths), structured
+  fields live in `attributes.all` as canonicalName/canonicalValues, and "TOP_AD"
+  promoted listings repeat across pages (deduped by id). Page 1 reports
+  `pagination.totalCount`, so we fetch exactly ⌈total/40⌉ pages (capped at 45)
+  concurrently. `_split_address` strips province/postal and keeps a street only when
+  it contains a digit (private posters hide the street, leaving just "Edmonton, AB").
 - **Contact button.** `scrapers/base.normalize_phone` parses a raw number into
   `(Listing.phone, Listing.phone_ext)` — a 10/11-digit NANP base plus any leftover
   digits as an extension, so call-center / property-manager numbers like
@@ -133,7 +144,16 @@ run.sh, requirements.txt
   (misses included, as an empty `phone`, so we never re-fetch), and returns the
   rendered panel (or link-out) HTML to swap in. This keeps the bulk scrape fast and
   spends a request only on listings the user actually pursues (the *lazy on-click*
-  choice over eager per-page / bulk-on-scrape).
+  choice over eager per-page / bulk-on-scrape). **Kijiji** never exposes a number in
+  its feed, so Kijiji listings always fall through to the "Contact on kijiji →"
+  link-out. The Zumper "fetch the detail page" trick does **not** work for Kijiji: its
+  detail page only carries a **masked** number (`posterInfo.phoneNumber = "780809xxxx"`),
+  and the real one comes from a reCAPTCHA-gated GraphQL call (`getProfilePhoneNumber`
+  at `/anvil/api`, profileId = `posterInfo.posterId`). That call works headless up to
+  the point of returning `"Recaptcha token is required"` for *every* poster type
+  (individual `StandardProfileV2` and commercial `CommercialProfileV2` alike), so the
+  number is unreachable without a real browser executing reCAPTCHA — out of scope for
+  this $0/no-browser app. Hence: link-out only for Kijiji.
   The panel markup lives in **one place** — the `contact_panel` Jinja macro in
   `_macros.html`, rendered both server-side (behind a "Contact" toggle for
   known-phone listings) and by the endpoint via the `_contact_panel.html` partial.
@@ -258,9 +278,9 @@ running app must be restarted (or it auto-reloads) to pick up a new key.
 - `git push origin main` just works from this repo. Default branch is `main`.
 - `.gitignore` excludes `.env`, `.venv/`, `data/`, `.claude/settings.local.json`.
 
-## Status (as of 2026-06-25)
+## Status (as of 2026-06-26)
 
-Working: all three scrapers, pool caching, ranking, blank-field-tolerant search,
+Working: all four scrapers (RentFaster, Rentals.ca, Zumper, Kijiji), pool caching, ranking, blank-field-tolerant search,
 commute filter (geocode + Distance Matrix), location autocomplete, cross-source
 dedupe, paginated results with Grid/List/Map views, the contact button, saved-listing
 favorites, "New" listing badges, address normalization, price-drop tracking, and
@@ -287,13 +307,15 @@ toggles); **price-drop tracking** ("↓ $X" badge + "Price drops" sort via
 `price_history`); **saved searches** (named `SearchFilters` snapshots) with
 **new-match counts** since last viewed; **input hardening** (unknown `sort_by` /
 `property_types` no longer 500 — they degrade; saved-search `filters_json` is
-script-safe-escaped).
+script-safe-escaped); **Kijiji scraper** (`__NEXT_DATA__` Apollo cache, ~1700 Edmonton
+listings, cents/×10-bath decode, totalCount-driven pagination, link-out contact; v7 pool).
 
 ### Possible next steps (not started)
 - Cache `/api/places/autocomplete` responses (currently every keystroke-after-debounce
   hits Google; cheap but not free).
-- Apartments.com / Zillow scrapers (deferred — both Cloudflare-hard). Facebook
-  Marketplace explicitly skipped per user.
+- More scrapers: Places4Students (U of A–relevant), liv.rent/RentSeeker/4rent (breadth).
+  Apartments.com / Zillow stay deferred (Cloudflare-hard; Zillow has ~no Canadian
+  rentals). Facebook Marketplace skipped (login + account-ban risk).
 - Email/push alerts for saved-search new matches (in-app counts exist; no notifications yet).
 - Consider Routes API migration only if legacy Distance Matrix gets sunset (mind the
   transit caveat above).
