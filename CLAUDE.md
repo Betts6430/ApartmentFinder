@@ -285,7 +285,9 @@ behind a "Show phone number" button; `normalize_phone` now keeps extensions
 list-row, and view-toggle UI polish (send-icon button, image-height rows, icon
 toggles); **price-drop tracking** ("↓ $X" badge + "Price drops" sort via
 `price_history`); **saved searches** (named `SearchFilters` snapshots) with
-**new-match counts** since last viewed.
+**new-match counts** since last viewed; **input hardening** (unknown `sort_by` /
+`property_types` no longer 500 — they degrade; saved-search `filters_json` is
+script-safe-escaped).
 
 ### Possible next steps (not started)
 - Cache `/api/places/autocomplete` responses (currently every keystroke-after-debounce
