@@ -139,7 +139,7 @@ function submitSearch(sort, page) {
       const lng = parseFloat(c.dataset.lng);
       const m = new google.maps.Marker({ position: { lat, lng }, map: mapInstance });
       const price = c.querySelector('.text-lg').innerHTML;
-      const title = c.querySelector('.line-clamp-2')?.textContent.trim() || '';
+      const title = c.querySelector('.listing-addr')?.textContent.trim() || '';
       const url = c.querySelector('a[target="_blank"]')?.href || '#';
       m.addListener('click', () => {
         info.setContent('<div style="font-size:13px;line-height:1.4"><b>' + price + '</b><br>' + escapeHtml(title) + '<br><a href="' + url + '" target="_blank" rel="noopener">View →</a></div>');

@@ -1,10 +1,72 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+# Sources spell street addresses every which way ("St" / "Street" / "ST",
+# "NW" / "Northwest", ALL CAPS, ordinal "37th"). Normalize to one house style:
+# expanded street-type words, uppercase quadrant abbreviations, ordinals stripped
+# from numbered streets, everything else Title Cased.
+_STREET_TYPES = {
+    "st": "Street", "street": "Street",
+    "ave": "Avenue", "av": "Avenue", "avenue": "Avenue",
+    "blvd": "Boulevard", "boulevard": "Boulevard",
+    "dr": "Drive", "drive": "Drive",
+    "rd": "Road", "road": "Road",
+    "cres": "Crescent", "crescent": "Crescent",
+    "pl": "Place", "place": "Place",
+    "ct": "Court", "court": "Court",
+    "cir": "Circle", "circle": "Circle",
+    "ter": "Terrace", "terrace": "Terrace",
+    "ln": "Lane", "lane": "Lane",
+    "pt": "Point", "point": "Point",
+    "sq": "Square", "square": "Square",
+    "gdns": "Gardens", "gardens": "Gardens",
+    "wynd": "Wynd", "way": "Way", "gate": "Gate", "green": "Green",
+    "hill": "Hill", "close": "Close", "bay": "Bay", "link": "Link",
+    "manor": "Manor", "row": "Row", "view": "View", "common": "Common",
+    "cove": "Cove", "crossing": "Crossing", "landing": "Landing",
+    "loop": "Loop", "ridge": "Ridge", "run": "Run", "vista": "Vista",
+    "trail": "Trail", "boulevard": "Boulevard",
+}
+_QUADRANTS = {
+    "nw": "NW", "northwest": "NW",
+    "ne": "NE", "northeast": "NE",
+    "sw": "SW", "southwest": "SW",
+    "se": "SE", "southeast": "SE",
+}
+_ORDINAL_RE = re.compile(r"^(\d+)(?:st|nd|rd|th)$", re.IGNORECASE)
+_NUM_RE = re.compile(r"^\d+$")
+_ALNUM_RE = re.compile(r"^\d+[a-z]$", re.IGNORECASE)  # e.g. "101A"
+
+
+def normalize_address(addr: Optional[str]) -> Optional[str]:
+    """Standardize a street address to one consistent house style. Returns None
+    for empty/blank input."""
+    if not addr or not addr.strip():
+        return None
+    out: list[str] = []
+    for tok in addr.split():
+        low = tok.lower().strip(".,")
+        m = _ORDINAL_RE.match(low)
+        if m:                       # "37th" -> "37"
+            out.append(m.group(1))
+        elif _NUM_RE.match(low):    # "10309" -> "10309"
+            out.append(low)
+        elif _ALNUM_RE.match(low):  # "101a" -> "101A"
+            out.append(low.upper())
+        elif low in _QUADRANTS:     # "Northwest" -> "NW"
+            out.append(_QUADRANTS[low])
+        elif low in _STREET_TYPES:  # "st" -> "Street"
+            out.append(_STREET_TYPES[low])
+        else:                       # "PODERSKY" -> "Podersky"
+            out.append(tok[:1].upper() + tok[1:].lower())
+    return " ".join(out) or None
 
 
 class PropertyType(str, Enum):
@@ -110,6 +172,11 @@ class Listing(BaseModel):
     value_score: Optional[float] = None
     location_score: Optional[float] = None
     niceness_score: Optional[float] = None
+
+    @field_validator("address")
+    @classmethod
+    def _normalize_address(cls, v: Optional[str]) -> Optional[str]:
+        return normalize_address(v)
 
     def matches(self, f: SearchFilters, include_transit: bool = True) -> bool:
         """Apply user filters in-memory to a normalized listing.

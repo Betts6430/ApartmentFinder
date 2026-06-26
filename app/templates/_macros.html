@@ -1,10 +1,11 @@
 {# Shared listing-rendering macros, used by results.html and favorites.html. #}
 
-{# Save/unsave heart. Toggles via /api/favorites/toggle (JS in base.html). #}
+{# Save/unsave heart, rendered as a small icon button. Toggles via
+   /api/favorites/toggle (JS in base.html, which swaps the glyph + color classes). #}
 {% macro fav_button(l, favorite_ids) %}
   {% set on = l.id in favorite_ids %}
   <button type="button" data-id="{{ l.id }}"
-    class="fav-btn shrink-0 text-xl leading-none transition-colors {{ 'text-rose-500' if on else 'text-slate-300 hover:text-rose-400' }}"
+    class="fav-btn shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg border border-slate-200 bg-white text-lg leading-none transition-colors {{ 'text-rose-500' if on else 'text-slate-300 hover:text-rose-400' }}"
     aria-pressed="{{ 'true' if on else 'false' }}" title="{{ 'Saved — click to remove' if on else 'Save listing' }}">{{ '♥' if on else '♡' }}</button>
 {% endmacro %}
 
@@ -13,32 +14,52 @@
   {% if new_ids and l.id in new_ids %}<span class="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-emerald-500 text-white">New</span>{% endif %}
 {% endmacro %}
 
-{# Contact affordance. RentFaster exposes a phone number, so we show a panel with
-   the number, a pre-written availability/viewing message, tel/sms links and a copy
-   button. Other sources gate contact behind their own forms, so we just link out. #}
+{# Contact affordance. RentFaster exposes a phone number, so the primary button
+   opens a panel with the number, a pre-written availability/viewing message,
+   tel/sms links and a copy button. Other sources gate contact behind their own
+   forms, so we render a secondary button that links out. #}
 {% macro contact_block(l) %}
   {% if l.phone %}
     {% set d = l.phone %}
-    {% set tel = ('+1' ~ d) if d|length == 11 else (('+1' ~ d) if d|length == 10 else d) %}
+    {% set tel = ('+1' ~ d) if d|length in (10, 11) else d %}
     {% set where = (' at ' ~ l.address) if l.address else '' %}
     {% set msg = "Hi! I saw your listing" ~ where ~ " for $" ~ "{:,.0f}".format(l.price) ~ "/mo on " ~ l.source ~ " — is it still available? I'd love to book a viewing." %}
     <div>
-      <button type="button" class="contact-toggle inline-flex items-center gap-1 text-sm text-blue-600 hover:underline" aria-expanded="false">📞 Contact owner</button>
-      <div class="contact-panel hidden mt-2 rounded-md border border-slate-200 bg-slate-50 p-2.5 text-xs space-y-2">
-        <div>
-          <a href="tel:{{ tel }}" class="font-medium text-blue-600 hover:underline">{% if d|length == 10 %}({{ d[:3] }}) {{ d[3:6] }}-{{ d[6:] }}{% elif d|length == 11 %}{{ d[0] }} ({{ d[1:4] }}) {{ d[4:7] }}-{{ d[7:] }}{% else %}{{ d }}{% endif %}</a>
-        </div>
-        <textarea readonly rows="3" class="contact-msg w-full resize-none rounded border border-slate-200 bg-white p-1.5 text-slate-700">{{ msg }}</textarea>
+      <button type="button" class="contact-toggle inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors" aria-expanded="false">Contact</button>
+      <div class="contact-panel hidden mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs space-y-2">
+        <a href="tel:{{ tel }}" class="block font-medium text-blue-600 hover:underline">{% if d|length == 10 %}({{ d[:3] }}) {{ d[3:6] }}-{{ d[6:] }}{% elif d|length == 11 %}{{ d[0] }} ({{ d[1:4] }}) {{ d[4:7] }}-{{ d[7:] }}{% else %}{{ d }}{% endif %}</a>
+        <textarea readonly rows="3" class="contact-msg w-full resize-none rounded-md border border-slate-200 bg-white p-1.5 text-slate-700">{{ msg }}</textarea>
         <div class="flex flex-wrap gap-1.5">
-          <a href="sms:{{ tel }}?&body={{ msg | urlencode }}" class="px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700">Text</a>
-          <button type="button" class="copy-msg px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100">Copy message</button>
-          <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100">View listing</a>
+          <a href="sms:{{ tel }}?&body={{ msg | urlencode }}" class="px-2.5 py-1 rounded-md bg-blue-600 text-white font-medium hover:bg-blue-700">Text</a>
+          <button type="button" class="copy-msg px-2.5 py-1 rounded-md border border-slate-300 bg-white font-medium hover:bg-slate-100">Copy</button>
+          <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="px-2.5 py-1 rounded-md border border-slate-300 bg-white font-medium hover:bg-slate-100">View</a>
         </div>
       </div>
     </div>
   {% else %}
-    <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="inline-block text-sm text-blue-600 hover:underline">Contact on {{ l.source }} →</a>
+    <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 text-sm font-medium hover:bg-slate-50 transition-colors">Contact on {{ l.source }} →</a>
   {% endif %}
+{% endmacro %}
+
+{# Specs line, e.g. "2 bd · 1 ba · 750 sqft · Apartment". #}
+{% macro specs(l) %}
+  {{ l.bedrooms|int if l.bedrooms == l.bedrooms|int else l.bedrooms }} bd ·
+  {{ l.bathrooms|int if l.bathrooms == l.bathrooms|int else l.bathrooms }} ba
+  {% if l.sqft %} · {{ l.sqft }} sqft{% endif %}
+  · <span class="capitalize">{{ l.property_type.value }}</span>
+{% endmacro %}
+
+{# Amenity list as a " · "-joined string (or empty). #}
+{% macro amenities_str(l) %}
+  {%- set a = [] -%}
+  {%- if l.in_suite_laundry %}{% set _ = a.append('Laundry') %}{% endif -%}
+  {%- if l.parking %}{% set _ = a.append('Parking') %}{% endif -%}
+  {%- if l.dishwasher %}{% set _ = a.append('Dishwasher') %}{% endif -%}
+  {%- if l.ac %}{% set _ = a.append('A/C') %}{% endif -%}
+  {%- if l.balcony %}{% set _ = a.append('Balcony') %}{% endif -%}
+  {%- if l.gym %}{% set _ = a.append('Gym') %}{% endif -%}
+  {%- if l.pets_allowed %}{% set _ = a.append('Pets OK') %}{% endif -%}
+  {{- a | join(' · ') -}}
 {% endmacro %}
 
 {# Grid card. #}
@@ -56,7 +77,7 @@
     <div class="aspect-[4/3] bg-slate-100 flex items-center justify-center text-slate-400 text-sm">No photo</div>
     {% endif %}
     <div class="p-4 flex flex-col gap-2 flex-grow">
-      <div class="flex items-center justify-between gap-2">
+      <div class="flex items-start justify-between gap-2">
         <div class="text-lg font-semibold">${{ "{:,.0f}".format(l.price) }}<span class="text-sm font-normal text-slate-500">/mo</span></div>
         <div class="flex items-center gap-2">
           {{ new_badge(l, new_ids) }}
@@ -64,24 +85,17 @@
           {{ fav_button(l, favorite_ids) }}
         </div>
       </div>
-      <div class="text-sm text-slate-700">
-        {{ l.bedrooms|int if l.bedrooms == l.bedrooms|int else l.bedrooms }} bd ·
-        {{ l.bathrooms|int if l.bathrooms == l.bathrooms|int else l.bathrooms }} ba
-        {% if l.sqft %} · {{ l.sqft }} sqft{% endif %}
-        · <span class="capitalize">{{ l.property_type.value }}</span>
-      </div>
-      <div class="text-sm text-slate-600 line-clamp-2">{{ l.title }}</div>
-      {% if l.address %}<div class="text-xs text-slate-500">{{ l.address }}{% if l.neighborhood %} · {{ l.neighborhood }}{% endif %}</div>{% endif %}
+      <div class="text-sm text-slate-700">{{ specs(l) }}</div>
+      {% if l.address %}<div class="listing-addr text-sm text-slate-600">{{ l.address }}{% if l.neighborhood %} · {{ l.neighborhood }}{% endif %}</div>{% endif %}
 
+      {% set amen = amenities_str(l) | trim %}
+      {% if amen %}
       <div class="flex flex-wrap gap-1 mt-1">
-        {% if l.in_suite_laundry %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">Laundry</span>{% endif %}
-        {% if l.parking %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">Parking</span>{% endif %}
-        {% if l.dishwasher %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">Dishwasher</span>{% endif %}
-        {% if l.ac %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">A/C</span>{% endif %}
-        {% if l.balcony %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">Balcony</span>{% endif %}
-        {% if l.gym %}<span class="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">Gym</span>{% endif %}
-        {% if l.pets_allowed %}<span class="text-xs px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded">Pets OK</span>{% endif %}
+        {% for a in amen.split(' · ') %}
+        <span class="text-xs px-2 py-0.5 rounded {{ 'bg-emerald-50 text-emerald-700' if a == 'Pets OK' else 'bg-slate-100 text-slate-600' }}">{{ a }}</span>
+        {% endfor %}
       </div>
+      {% endif %}
 
       {% if l.transit_minutes is not none %}
       <div class="text-xs text-emerald-700 font-medium mt-1">{{ l.transit_minutes|round|int }} min commute</div>
@@ -91,42 +105,34 @@
   </article>
 {% endmacro %}
 
-{# List row. #}
+{# List row — compact: price + specs on one line, address below, amenities/commute
+   muted, contact + save aligned right. #}
 {% macro row(l, favorite_ids, new_ids) %}
-  <div class="listing-row flex gap-4 p-4 hover:bg-slate-50">
+  <div class="listing-row flex items-start gap-3 px-4 py-3 hover:bg-slate-50">
     {% if l.photos %}
-    <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="hidden sm:block shrink-0 w-28 h-20 rounded-md overflow-hidden bg-slate-100">
+    <a href="{{ l.source_url }}" target="_blank" rel="noopener" class="hidden sm:block shrink-0 w-24 h-16 rounded-md overflow-hidden bg-slate-100">
       <img src="{{ l.photos[0] }}" alt="" loading="lazy" class="w-full h-full object-cover" />
     </a>
     {% endif %}
-    <div class="min-w-0 flex-1 flex flex-col gap-1">
-      <div class="flex items-center justify-between gap-2">
-        <span class="text-lg font-semibold">${{ "{:,.0f}".format(l.price) }}<span class="text-sm font-normal text-slate-500">/mo</span></span>
-        <div class="flex items-center gap-2 shrink-0">
-          {{ new_badge(l, new_ids) }}
-          <span class="text-xs uppercase tracking-wide text-slate-400">{{ l.source }}</span>
-          {{ fav_button(l, favorite_ids) }}
-        </div>
+    <div class="min-w-0 flex-1 flex flex-col gap-0.5">
+      <div class="flex items-baseline gap-2 min-w-0">
+        <span class="text-base font-semibold whitespace-nowrap">${{ "{:,.0f}".format(l.price) }}<span class="text-xs font-normal text-slate-500">/mo</span></span>
+        <span class="text-xs text-slate-600 truncate">{{ specs(l) }}</span>
+        {{ new_badge(l, new_ids) }}
       </div>
-      <div class="text-sm text-slate-700">
-        {{ l.bedrooms|int if l.bedrooms == l.bedrooms|int else l.bedrooms }} bd ·
-        {{ l.bathrooms|int if l.bathrooms == l.bathrooms|int else l.bathrooms }} ba
-        {% if l.sqft %} · {{ l.sqft }} sqft{% endif %}
-        · <span class="capitalize">{{ l.property_type.value }}</span>
+      {% if l.address %}<div class="text-sm text-slate-600 truncate">{{ l.address }}{% if l.neighborhood %} · {{ l.neighborhood }}{% endif %}</div>{% endif %}
+      {% set amen = amenities_str(l) | trim %}
+      {% if amen or l.transit_minutes is not none %}
+      <div class="flex items-center gap-2 text-xs truncate">
+        {% if amen %}<span class="text-slate-500 truncate">{{ amen }}</span>{% endif %}
+        {% if l.transit_minutes is not none %}<span class="text-emerald-700 font-medium whitespace-nowrap">{{ l.transit_minutes|round|int }} min commute</span>{% endif %}
       </div>
-      <div class="text-sm text-slate-600 truncate">{{ l.title }}</div>
-      {% if l.address %}<div class="text-xs text-slate-500 truncate">{{ l.address }}{% if l.neighborhood %} · {{ l.neighborhood }}{% endif %}</div>{% endif %}
-      {% set amenities = [] %}
-      {% if l.in_suite_laundry %}{% set _ = amenities.append('Laundry') %}{% endif %}
-      {% if l.parking %}{% set _ = amenities.append('Parking') %}{% endif %}
-      {% if l.dishwasher %}{% set _ = amenities.append('Dishwasher') %}{% endif %}
-      {% if l.ac %}{% set _ = amenities.append('A/C') %}{% endif %}
-      {% if l.balcony %}{% set _ = amenities.append('Balcony') %}{% endif %}
-      {% if l.gym %}{% set _ = amenities.append('Gym') %}{% endif %}
-      {% if l.pets_allowed %}{% set _ = amenities.append('Pets OK') %}{% endif %}
-      {% if amenities %}<div class="text-xs text-slate-500">{{ amenities | join(' · ') }}</div>{% endif %}
-      {% if l.transit_minutes is not none %}<div class="text-xs text-emerald-700 font-medium">{{ l.transit_minutes|round|int }} min commute</div>{% endif %}
-      <div class="pt-0.5">{{ contact_block(l) }}</div>
+      {% endif %}
+      <div class="pt-1">{{ contact_block(l) }}</div>
+    </div>
+    <div class="shrink-0 self-start flex items-center gap-2">
+      <span class="text-xs uppercase tracking-wide text-slate-400">{{ l.source }}</span>
+      {{ fav_button(l, favorite_ids) }}
     </div>
   </div>
 {% endmacro %}
