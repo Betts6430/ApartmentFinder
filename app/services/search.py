@@ -6,6 +6,8 @@ import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Optional
 
 from app import cache
 from app.models import Listing, SearchFilters
@@ -132,14 +134,19 @@ async def _scrape_all(filters: SearchFilters) -> list[Listing]:
 
 
 async def filter_and_enrich(
-    filters: SearchFilters, pool: list[Listing]
+    filters: SearchFilters, pool: list[Listing], *, mutate: bool = True
 ) -> tuple[list[Listing], list[str]]:
     """Apply non-transit filters, then the commute filter (geocode + transit enrich),
     to an already-loaded pool. Returns (survivors, warnings).
 
     Shared by `run_search` and the saved-searches match count so the two always agree
     — the count would otherwise have to skip the commute filter and over-report.
-    Mutates `transit_minutes` on the matched listings (in-memory pool objects).
+
+    The filtering decision is made from a local transit map, never from the listing
+    objects, so the function is safe to run concurrently over the same pool (the
+    /searches page does). `mutate=True` additionally writes `transit_minutes` onto the
+    matched listings (run_search needs that for ranking/display); pass `mutate=False`
+    for the count path to avoid racing on shared pool objects.
     """
     warnings: list[str] = []
     # Apply non-transit filters first so we only pay for transit enrichment on survivors.
@@ -162,14 +169,18 @@ async def filter_and_enrich(
                 )
             origins = [(l.lat, l.lng) for l in geo_survivors]  # type: ignore[arg-type]
             minutes = await transit.compute_transit(origins, dest, filters.transit_mode)
+            mins_by_id: dict[str, Optional[float]] = {}
             for l, m in zip(geo_survivors, minutes):
-                l.transit_minutes = m
-            # Apply transit_minutes_max now that times are populated.
+                mins_by_id[l.id] = m
+                if mutate:
+                    l.transit_minutes = m
+            # Filter from the local map (not l.transit_minutes) so concurrent callers
+            # with different destinations can't read each other's writes.
             if filters.transit_minutes_max is not None:
                 survivors = [
                     l for l in survivors
-                    if l.transit_minutes is not None
-                    and l.transit_minutes <= filters.transit_minutes_max
+                    if mins_by_id.get(l.id) is not None
+                    and mins_by_id[l.id] <= filters.transit_minutes_max  # type: ignore[operator]
                 ]
     return survivors, warnings
 
@@ -196,11 +207,20 @@ async def run_search(filters: SearchFilters) -> SearchResult:
 
     survivors, warnings = await filter_and_enrich(filters, listings or [])
 
-    # Enrich with the most recent price drop (if any) for badges + the drops sort.
-    drops = await cache.get_price_drops([l.id for l in survivors])
+    # Enrich with the most recent price drop (if any) for badges + the drops sort,
+    # and first-seen times so the "Newest" sort ranks by real recency.
+    survivor_ids = [l.id for l in survivors]
+    drops = await cache.get_price_drops(survivor_ids)
+    first_seen = await cache.get_first_seen_many(survivor_ids)
     for l in survivors:
         if l.id in drops:
             l.prev_price = drops[l.id]
+        ts = first_seen.get(l.id)
+        if ts:
+            try:
+                l.first_seen = datetime.fromisoformat(ts)
+            except ValueError:
+                pass
 
     ranking.apply_scores(survivors, filters)
     return SearchResult(listings=ranking.sort_listings(survivors, filters.sort_by), warnings=warnings)

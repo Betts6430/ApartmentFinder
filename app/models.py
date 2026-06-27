@@ -7,6 +7,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.timeutil import utcnow
+
 
 # Sources spell street addresses every which way ("St" / "Street" / "ST",
 # "NW" / "Northwest", ALL CAPS, ordinal "37th"). Normalize to one house style:
@@ -32,7 +34,7 @@ _STREET_TYPES = {
     "manor": "Manor", "row": "Row", "view": "View", "common": "Common",
     "cove": "Cove", "crossing": "Crossing", "landing": "Landing",
     "loop": "Loop", "ridge": "Ridge", "run": "Run", "vista": "Vista",
-    "trail": "Trail", "boulevard": "Boulevard",
+    "trail": "Trail",
 }
 _QUADRANTS = {
     "nw": "NW", "northwest": "NW",
@@ -53,6 +55,8 @@ def normalize_address(addr: Optional[str]) -> Optional[str]:
     out: list[str] = []
     for tok in addr.split():
         low = tok.lower().strip(".,")
+        if not low:                 # punctuation-only token ("," etc.) — drop
+            continue
         m = _ORDINAL_RE.match(low)
         if m:                       # "37th" -> "37"
             out.append(m.group(1))
@@ -64,8 +68,8 @@ def normalize_address(addr: Optional[str]) -> Optional[str]:
             out.append(_QUADRANTS[low])
         elif low in _STREET_TYPES:  # "st" -> "Street"
             out.append(_STREET_TYPES[low])
-        else:                       # "PODERSKY" -> "Podersky"
-            out.append(tok[:1].upper() + tok[1:].lower())
+        else:                       # "PODERSKY," -> "Podersky" (punctuation stripped)
+            out.append(low[:1].upper() + low[1:])
     return " ".join(out) or None
 
 
@@ -169,11 +173,12 @@ class Listing(BaseModel):
     description: str = ""
     amenities: list[str] = Field(default_factory=list)
 
-    scraped_at: datetime = Field(default_factory=datetime.utcnow)
+    scraped_at: datetime = Field(default_factory=utcnow)
 
     # Enriched fields, set after scrape
     transit_minutes: Optional[float] = None
     prev_price: Optional[float] = None  # most recent earlier price, set when a drop is detected
+    first_seen: Optional[datetime] = None  # from listing_seen; powers the "Newest" sort
     value_score: Optional[float] = None
     location_score: Optional[float] = None
     niceness_score: Optional[float] = None

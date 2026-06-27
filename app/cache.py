@@ -1,9 +1,16 @@
 """SQLite-backed cache.
 
-Three caches:
-- listings: id -> full Listing JSON (kept ~24h to allow cross-search reuse)
-- search_cache: filter_hash -> list of listing IDs (TTL = SEARCH_CACHE_TTL_HOURS)
-- transit_cache: (origin_lat,origin_lng,dest_lat,dest_lng,mode) -> minutes (no TTL)
+Tables (see `_SCHEMA`):
+- listings:      id -> full Listing JSON (the scraped pool; pruned by age via `prune`)
+- search_cache:  filter_hash -> listing IDs (logical TTL = SEARCH_CACHE_TTL_HOURS)
+- transit_cache: (o_lat,o_lng,d_lat,d_lng,mode) -> minutes (no TTL — commutes are stable)
+- geocode_cache / contact_cache: location & phone lookups (no TTL — they don't change)
+- favorites:     saved-listing snapshots (kept until the user un-saves)
+- listing_seen / price_history / meta / saved_searches: new-badge, drop-tracking,
+  key/value, and saved-search state.
+
+`prune()` (run at startup) drops aged-out rows so the file doesn't grow forever;
+the no-TTL caches above are intentionally left alone.
 """
 
 from __future__ import annotations
@@ -16,6 +23,7 @@ import aiosqlite
 
 from app.config import settings
 from app.models import Listing, SearchFilters
+from app.timeutil import utcnow
 
 DB_PATH = settings.cache_dir / "cache.db"
 
@@ -103,6 +111,9 @@ CREATE INDEX IF NOT EXISTS idx_search_cache_created_at ON search_cache(created_a
 
 async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
+        # WAL allows concurrent reads during a write and survives the many short-lived
+        # connections this module opens; a one-time pragma persisted on the DB file.
+        await db.execute("PRAGMA journal_mode=WAL")
         await db.executescript(_SCHEMA)
         # Migration: `last_alerted_at` anchors email alerts independently of viewing.
         # Backfill existing rows to last_viewed_at so old searches don't blast an alert
@@ -114,6 +125,28 @@ async def init_db() -> None:
             await db.execute(
                 "UPDATE saved_searches SET last_alerted_at = last_viewed_at WHERE last_alerted_at IS NULL"
             )
+        await db.commit()
+
+
+async def prune(
+    listings_days: int = 7, price_history_days: int = 90, seen_days: int = 120
+) -> None:
+    """Drop aged-out rows so the DB file doesn't grow without bound.
+
+    Safe because: pruned `listings` are far older than the pool's few-hour TTL (so a
+    live cached pool is never touched), and favorites are snapshotted in their own
+    table. The no-TTL caches (transit/geocode/contact) are intentionally never pruned.
+    """
+    now = utcnow()
+    l_cut = (now - timedelta(days=listings_days)).isoformat()
+    ph_cut = (now - timedelta(days=price_history_days)).isoformat()
+    seen_cut = (now - timedelta(days=seen_days)).isoformat()
+    sc_cut = (now - timedelta(hours=settings.search_cache_ttl_hours)).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM listings WHERE scraped_at < ?", (l_cut,))
+        await db.execute("DELETE FROM price_history WHERE seen_at < ?", (ph_cut,))
+        await db.execute("DELETE FROM listing_seen WHERE first_seen < ?", (seen_cut,))
+        await db.execute("DELETE FROM search_cache WHERE created_at < ?", (sc_cut,))
         await db.commit()
 
 
@@ -144,7 +177,7 @@ async def get_listings(ids: list[str]) -> list[Listing]:
 
 
 async def get_cached_search(filter_hash: str) -> Optional[list[Listing]]:
-    cutoff = datetime.utcnow() - timedelta(hours=settings.search_cache_ttl_hours)
+    cutoff = utcnow() - timedelta(hours=settings.search_cache_ttl_hours)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT listing_ids, created_at FROM search_cache WHERE filter_hash = ?",
@@ -165,7 +198,7 @@ async def save_search(filter_hash: str, listings: list[Listing]) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT OR REPLACE INTO search_cache (filter_hash, listing_ids, created_at) VALUES (?, ?, ?)",
-            (filter_hash, json.dumps([l.id for l in listings]), datetime.utcnow().isoformat()),
+            (filter_hash, json.dumps([l.id for l in listings]), utcnow().isoformat()),
         )
         await db.commit()
 
@@ -202,7 +235,7 @@ async def save_transit_bulk(
     """rows = (o_lat, o_lng, d_lat, d_lng, mode, minutes)"""
     if not rows:
         return
-    now = datetime.utcnow().isoformat()
+    now = utcnow().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executemany(
             "INSERT OR REPLACE INTO transit_cache (route_hash, minutes, created_at) VALUES (?, ?, ?)",
@@ -230,7 +263,7 @@ async def save_geocode(query: str, lat: float, lng: float, formatted: str = "") 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT OR REPLACE INTO geocode_cache (query_norm, lat, lng, formatted, created_at) VALUES (?, ?, ?, ?, ?)",
-            (qn, lat, lng, formatted, datetime.utcnow().isoformat()),
+            (qn, lat, lng, formatted, utcnow().isoformat()),
         )
         await db.commit()
 
@@ -241,7 +274,7 @@ async def add_favorite(listing: Listing) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT OR REPLACE INTO favorites (id, payload, favorited_at) VALUES (?, ?, ?)",
-            (listing.id, listing.model_dump_json(), datetime.utcnow().isoformat()),
+            (listing.id, listing.model_dump_json(), utcnow().isoformat()),
         )
         await db.commit()
 
@@ -304,7 +337,7 @@ async def record_scrape(ids: list[str]) -> None:
     scrape boundary so the just-appeared listings can be flagged as "new". The
     boundary (`prev_scrape_at`) is the *previous* scrape time; nothing is flagged
     on the very first scrape, avoiding a cold-start where everything looks new."""
-    now = datetime.utcnow().isoformat()
+    now = utcnow().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT value FROM meta WHERE key = 'last_scrape_at'") as cur:
             row = await cur.fetchone()
@@ -321,6 +354,24 @@ async def record_scrape(ids: list[str]) -> None:
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('last_scrape_at', ?)", (now,)
         )
         await db.commit()
+
+
+async def get_first_seen_many(ids: list[str]) -> dict[str, str]:
+    """Map each given id to its first-seen ISO timestamp (omitted if never seen).
+    Lets the "Newest" sort rank by genuine listing recency rather than the
+    near-uniform scrape time."""
+    if not ids:
+        return {}
+    out: dict[str, str] = {}
+    async with aiosqlite.connect(DB_PATH) as db:
+        for i in range(0, len(ids), _SQLITE_MAX_VARS):
+            chunk = ids[i : i + _SQLITE_MAX_VARS]
+            ph = ",".join("?" * len(chunk))
+            async with db.execute(
+                f"SELECT id, first_seen FROM listing_seen WHERE id IN ({ph})", chunk
+            ) as cur:
+                out.update({r[0]: r[1] for r in await cur.fetchall()})
+    return out
 
 
 async def get_new_ids(ids: list[str]) -> set[str]:
@@ -361,7 +412,7 @@ async def save_contact(listing_id: str, phone: Optional[str], phone_ext: Optiona
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT OR REPLACE INTO contact_cache (id, phone, phone_ext, fetched_at) VALUES (?, ?, ?, ?)",
-            (listing_id, phone or "", phone_ext or "", datetime.utcnow().isoformat()),
+            (listing_id, phone or "", phone_ext or "", utcnow().isoformat()),
         )
         await db.commit()
 
@@ -378,7 +429,7 @@ async def record_prices(items: list[Listing]) -> None:
     history stays compact — one row per actual change, not one per scrape."""
     if not items:
         return
-    now = datetime.utcnow().isoformat()
+    now = utcnow().isoformat()
     ids = [l.id for l in items]
     latest: dict[str, float] = {}
     async with aiosqlite.connect(DB_PATH) as db:
@@ -409,7 +460,7 @@ async def get_price_drops(ids: list[str], within_days: int = 30) -> dict[str, fl
     caller already has the current one and can show the delta."""
     if not ids:
         return {}
-    cutoff = (datetime.utcnow() - timedelta(days=within_days)).isoformat()
+    cutoff = (utcnow() - timedelta(days=within_days)).isoformat()
     out: dict[str, float] = {}
     async with aiosqlite.connect(DB_PATH) as db:
         for i in range(0, len(ids), _SQLITE_MAX_VARS):
@@ -440,7 +491,7 @@ async def get_price_drops(ids: list[str], within_days: int = 30) -> dict[str, fl
 # --- Saved searches ----------------------------------------------------------
 
 async def add_saved_search(name: str, filters: SearchFilters) -> int:
-    now = datetime.utcnow().isoformat()
+    now = utcnow().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             "INSERT INTO saved_searches (name, filters, created_at, last_viewed_at, last_alerted_at) "
@@ -489,7 +540,7 @@ async def mark_search_alerted(search_id: int) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE saved_searches SET last_alerted_at = ? WHERE id = ?",
-            (datetime.utcnow().isoformat(), search_id),
+            (utcnow().isoformat(), search_id),
         )
         await db.commit()
 
@@ -505,7 +556,7 @@ async def touch_saved_search(search_id: int) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE saved_searches SET last_viewed_at = ? WHERE id = ?",
-            (datetime.utcnow().isoformat(), search_id),
+            (utcnow().isoformat(), search_id),
         )
         await db.commit()
 

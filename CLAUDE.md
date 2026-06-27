@@ -22,9 +22,9 @@ tier thanks to aggressive caching.
 - **httpx** for Google Maps API calls (Geocoding, Distance Matrix, Places New)
 - pydantic v2 + pydantic-settings
 
-> Note: `requirements.txt` lists `htmx` historically but it is **not used** — the
-> UI is plain server-rendered forms + vanilla JS. (The dead htmx/Alpine CDN
-> includes were removed from `base.html`.)
+> Note: the UI is plain server-rendered forms + vanilla JS — **no htmx/Alpine**
+> (the dead htmx/Alpine CDN includes were removed from `base.html`, and `htmx` is
+> no longer in `requirements.txt`).
 
 ## How to run
 
@@ -34,7 +34,20 @@ tier thanks to aggressive caching.
 
 Then open **http://localhost:8000**. Stop with `pkill -f "uvicorn app.main:app"`.
 
-`--reload` is on, so Python/template edits apply live.
+`--reload` is on, so Python/template edits apply live. **`.env` changes are NOT
+watched** — restart the app to pick those up.
+
+## Tests
+
+```bash
+./run_tests.sh            # pytest over tests/ (pass-through args ok: ./run_tests.sh -k phone)
+```
+
+Unit tests cover the pure logic (cross-source dedupe, address/phone normalization,
+sqft sanitizing, ranking/sorting incl. the first_seen-based "Newest", `matches()`,
+transit departure-time helper). `run_tests.sh` sets `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`
+to isolate from unrelated **system pytest plugins** (ROS's `launch_testing` leaks in via
+global site-packages and fails to import `lark`) — run pytest that way, not bare.
 
 ### Environment gotchas (important)
 - **No sudo, no Node, `python3-venv` not installed.** The `.venv` was bootstrapped

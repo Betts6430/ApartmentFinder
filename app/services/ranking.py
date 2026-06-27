@@ -123,5 +123,7 @@ def sort_listings(listings: list[Listing], sort_by: SortBy) -> list[Listing]:
             reverse=True,
         )
     if sort_by == SortBy.NEWEST:
-        return sorted(listings, key=lambda l: l.scraped_at, reverse=True)
+        # Rank by when the listing first appeared in our pool (real recency).
+        # scraped_at is near-uniform across a pool, so it's only a tiebreak fallback.
+        return sorted(listings, key=lambda l: (l.first_seen or l.scraped_at), reverse=True)
     return listings

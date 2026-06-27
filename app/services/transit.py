@@ -6,14 +6,18 @@
   cached forever per (origin, dest, mode) tuple.
 
 Edmonton listings + a single user target means each request hits at most ~25
-distinct destination pairs per batch. We pin departure_time="now" for transit;
-absolute precision isn't important and it makes results cacheable.
+distinct destination pairs per batch. For transit we pin departure_time to the
+*next weekday at 08:00* (rush hour) rather than "now": our transit_cache key has
+no time component, so the first computed value is cached forever — anchoring it to
+a representative weekday-morning departure means a commute scored at 2am (when no
+buses run) doesn't get cached as the listing's permanent commute time.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from typing import Optional
 
 import httpx
@@ -45,6 +49,20 @@ def _within_edmonton(lat: float, lng: float) -> bool:
     return lat_min <= lat <= lat_max and lng_min <= lng <= lng_max
 
 
+def _next_weekday_morning_ts() -> int:
+    """Unix timestamp for the upcoming weekday at 08:00 (local time).
+
+    Always in the future (Distance Matrix rejects past `departure_time`) and always
+    a Mon–Fri rush hour, so the first — and, given the time-agnostic cache key,
+    permanent — transit reading for a route is representative of a real commute."""
+    target = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
+    if datetime.now() >= target:
+        target += timedelta(days=1)
+    while target.weekday() >= 5:  # Sat=5, Sun=6 -> roll to Monday
+        target += timedelta(days=1)
+    return int(target.timestamp())
+
+
 class TransitError(Exception):
     pass
 
@@ -73,8 +91,14 @@ async def geocode(query: str) -> Optional[tuple[float, float]]:
         "components": "administrative_area:AB|country:CA",
         "bounds": "53.396,-113.715|53.712,-113.270",  # Edmonton city bounding box
     }
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        r = await client.get(GEOCODE_URL, params=params)
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(GEOCODE_URL, params=params)
+    except Exception as e:
+        # Network blip / timeout — degrade gracefully (no commute filter) rather
+        # than 500 the search or kill an alert-poller cycle.
+        log.warning("geocode request failed for %r: %s", query, e)
+        return None
     if r.status_code != 200:
         log.warning("geocode HTTP %s: %s", r.status_code, r.text[:200])
         return None
@@ -110,8 +134,9 @@ async def _distance_matrix_call(
         "units": "metric",
     }
     if mode == "transit":
-        # Required for transit; a fixed weekday peak gives stable, cache-friendly results.
-        params["departure_time"] = "now"
+        # Required for transit; the next weekday 08:00 gives a stable, representative
+        # rush-hour reading (see module docstring on why not "now").
+        params["departure_time"] = str(_next_weekday_morning_ts())
 
     r = await client.get(DISTANCE_MATRIX_URL, params=params, timeout=20.0)
     if r.status_code != 200:
@@ -169,7 +194,7 @@ async def compute_transit(
         # Batch in chunks of BATCH_SIZE origins.
         sem = asyncio.Semaphore(4)  # limit parallel DM calls
 
-        async def fetch_batch(batch_start: int, batch: list[tuple[float, float]]):
+        async def fetch_batch(batch: list[tuple[float, float]]):
             async with sem:
                 try:
                     return await _distance_matrix_call(client, batch, dest, mode)
@@ -181,7 +206,7 @@ async def compute_transit(
         for i in range(0, len(uncached_origins), BATCH_SIZE):
             batches.append((i, uncached_origins[i : i + BATCH_SIZE]))
 
-        batch_results = await asyncio.gather(*(fetch_batch(s, b) for s, b in batches))
+        batch_results = await asyncio.gather(*(fetch_batch(b) for _, b in batches))
 
     # Stitch back into cached_minutes and persist successful lookups.
     rows_to_cache: list[tuple[float, float, float, float, str, float]] = []

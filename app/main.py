@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from contextlib import asynccontextmanager
@@ -31,10 +32,9 @@ PAGE_SIZE = 60
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await cache.init_db()
+    await cache.prune()  # drop aged-out rows so the DB doesn't grow forever
     poller = None
     if settings.smtp_configured and settings.alert_poll_minutes > 0:
-        import asyncio
-
         from app.services.alerts import alert_poller
         poller = asyncio.create_task(alert_poller())
     elif settings.smtp_configured:
@@ -218,8 +218,10 @@ async def _run_and_render(request: Request, filters: SearchFilters, page: int) -
     page_listings = listings[start : start + PAGE_SIZE]
 
     page_ids = [l.id for l in page_listings]
-    favorite_ids = await cache.get_favorite_ids()
-    new_ids = await cache.get_new_ids(page_ids)
+    # Independent lookups — run them concurrently.
+    favorite_ids, new_ids = await asyncio.gather(
+        cache.get_favorite_ids(), cache.get_new_ids(page_ids)
+    )
 
     return templates.TemplateResponse(
         "results.html",
@@ -361,22 +363,28 @@ async def searches(request: Request) -> HTMLResponse:
     transit times here too; results are cached, so repeat loads stay fast."""
     saved = await cache.get_saved_searches()
     pool = await cache.get_cached_search(SearchFilters.scrape_cache_key()) or []
-    items = []
-    for s in saved:
-        matching, _ = await filter_and_enrich(s["filters"], pool)
+
+    async def summarize(s: dict) -> dict:
+        # mutate=False: concurrent searches must not write transit_minutes onto the
+        # shared pool objects (the count only needs the survivor set, not the times).
+        matching, _ = await filter_and_enrich(s["filters"], pool, mutate=False)
         new_count = await cache.count_listing_seen_after(
             [l.id for l in matching], s["last_viewed_at"]
         )
-        items.append({
+        return {
             "id": s["id"],
             "name": s["name"],
             "summary": _summarize_filters(s["filters"]),
             "total": len(matching),
             "new": new_count,
-        })
+        }
+
+    # Each saved search geocodes + looks up transit independently; run them
+    # concurrently so the page is as slow as the slowest one, not their sum.
+    items = await asyncio.gather(*(summarize(s) for s in saved))
     return templates.TemplateResponse(
         "searches.html",
-        {"request": request, "searches": items, "pool_ready": bool(pool)},
+        {"request": request, "searches": list(items), "pool_ready": bool(pool)},
     )
 
 
