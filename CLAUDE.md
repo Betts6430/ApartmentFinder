@@ -213,9 +213,9 @@ run.sh, requirements.txt
   `last_viewed_at` (reusing `listing_seen.first_seen`). Opening a search
   (`/searches/{id}/open`) runs it via the shared `_run_and_render` helper and
   `touch_saved_search` resets the count. Saving stamps `last_viewed_at = now`, so a
-  fresh save shows 0 new (nothing is newer than the moment you saved). NOTE: email
-  alerts (below) still match **non-transit** in `dispatch_alerts` — a known inconsistency
-  with these counts (alerts can fire for a listing outside the commute limit).
+  fresh save shows 0 new (nothing is newer than the moment you saved). Email alerts
+  (below) match the **same** way (`filter_and_enrich`), so an alert only fires for a
+  listing that would actually appear when the search is opened — counts and alerts agree.
 - **Saved-search email alerts.** Opt-in (`services/alerts.py`). Two independent
   halves: the **sending mailbox** (SMTP plumbing, `.env` `SMTP_*`, gated by
   `settings.smtp_configured` = host present) and the **recipient** (set in-app on the
@@ -226,8 +226,9 @@ run.sh, requirements.txt
   restarting — single-user app, so there's exactly one global recipient, not per-user;
   real multi-user would need accounts.) Alerts fire from **one**
   dispatch point: after a *fresh scrape*, `run_search` calls `dispatch_alerts(pool)`,
-  which for each saved search matches the pool (`matches`, **non-transit** — same
-  reason as the count) and emails the subset first seen since that search's
+  which for each saved search matches the pool with `search.filter_and_enrich` (the
+  **full** filter, commute included — so an alert never fires for a listing outside the
+  search's travel-time limit) and emails the subset first seen since that search's
   `last_alerted_at` (`cache.list_listing_seen_after`), then `mark_search_alerted`
   stamps now so they never re-notify. `last_alerted_at` is a **separate** column from
   `last_viewed_at` so emailing and in-app viewing don't interfere (opening a search

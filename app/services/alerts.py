@@ -2,15 +2,15 @@
 
 A single dispatch point (`dispatch_alerts`) runs whenever the scraped pool is
 genuinely refreshed — for each saved search it finds listings that are *new since
-that search was last alerted* (non-transit match, mirroring the in-app new-match
-count) and emails them, then stamps `last_alerted_at` so they never re-notify.
+that search was last alerted* and emails them, then stamps `last_alerted_at` so
+they never re-notify. Matching uses `search.filter_and_enrich`, the **full** filter
+including the commute limit, so an alert only fires for a listing that would
+actually show when the search is opened. Commute lookups are cached, so the only
+real cost per scrape is geocoding for new listings (see the cost notes in CLAUDE.md).
 
 A lightweight background poller (`alert_poller`) forces periodic re-scrapes so
 alerts arrive without the user opening the app. The whole feature no-ops unless
-SMTP + a recipient are configured (see `settings.alerts_enabled`).
-
-Transit filters are intentionally ignored when matching (same as the in-app
-count): scoring commute times would need per-search geocoding on every poll.
+SMTP + a recipient are configured.
 """
 from __future__ import annotations
 
@@ -101,6 +101,9 @@ async def dispatch_alerts(pool: list[Listing]) -> None:
     recipient = await resolve_recipient()
     if not recipient:
         return  # no Settings-page email yet and no .env fallback
+    # Lazy import avoids a circular dependency (search.py imports alerts for dispatch).
+    from app.services.search import filter_and_enrich
+
     by_id = {l.id: l for l in pool}
     try:
         saved = await cache.get_saved_searches()
@@ -110,7 +113,9 @@ async def dispatch_alerts(pool: list[Listing]) -> None:
 
     for s in saved:
         try:
-            matching = [l for l in pool if l.matches(s["filters"], include_transit=False)]
+            # Match exactly what the search would show, commute filter included, so an
+            # alert never fires for a listing outside the saved search's travel-time limit.
+            matching, _ = await filter_and_enrich(s["filters"], pool)
             since = s["last_alerted_at"] or s["last_viewed_at"]
             new_ids = await cache.list_listing_seen_after([l.id for l in matching], since)
             if not new_ids:
