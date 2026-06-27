@@ -16,7 +16,7 @@ from app.config import settings
 from app.models import PropertyType, SearchFilters, SortBy
 from app.scrapers.base import normalize_phone
 from app.scrapers.zumper import fetch_listing_phone
-from app.services.search import run_search
+from app.services.search import filter_and_enrich, run_search
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger(__name__)
@@ -354,12 +354,16 @@ async def save_search(name: str = Form(...), filters: str = Form(...)) -> JSONRe
 
 @app.get("/searches", response_class=HTMLResponse)
 async def searches(request: Request) -> HTMLResponse:
-    """List saved searches with a count of new matches since each was last viewed."""
+    """List saved searches with a count of new matches since each was last viewed.
+
+    Match counts apply the full commute filter (via the shared `filter_and_enrich`),
+    so they equal what opening the search shows. Commute searches geocode + look up
+    transit times here too; results are cached, so repeat loads stay fast."""
     saved = await cache.get_saved_searches()
     pool = await cache.get_cached_search(SearchFilters.scrape_cache_key()) or []
     items = []
     for s in saved:
-        matching = [l for l in pool if l.matches(s["filters"], include_transit=False)]
+        matching, _ = await filter_and_enrich(s["filters"], pool)
         new_count = await cache.count_listing_seen_after(
             [l.id for l in matching], s["last_viewed_at"]
         )

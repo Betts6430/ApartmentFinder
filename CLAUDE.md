@@ -202,13 +202,20 @@ run.sh, requirements.txt
 - **Saved searches + new-match counts.** The results page serializes the active
   `SearchFilters` (`filters_json`) into a `★ Save search` button that POSTs to
   `/api/searches`; `cache.add_saved_search` stores the JSON in `saved_searches` with a
-  `last_viewed_at`. `GET /searches` lists them, and for each counts **new matches since
-  last viewed**: filter the cached pool by the saved filters (`matches`, non-transit —
-  transit counting would need per-search geocoding) and `cache.count_listing_seen_after`
-  the survivors against `last_viewed_at` (reusing `listing_seen.first_seen`). Opening a
-  search (`/searches/{id}/open`) runs it via the shared `_run_and_render` helper and
+  `last_viewed_at`. `GET /searches` lists them with both a **total match count** and a
+  **new-since-last-viewed count**. Both apply the **full** filter set, commute included,
+  via the shared `search.filter_and_enrich(filters, pool)` — the same filter→transit→
+  filter core `run_search` uses — so the listed totals **equal** what opening the search
+  shows. (Earlier this skipped the commute filter to avoid per-search geocoding, which
+  made commute searches over-report and made two searches differing only by destination
+  show an identical count; now they geocode + look up transit here too, cached so repeat
+  loads stay fast.) `cache.count_listing_seen_after` counts the survivors first seen after
+  `last_viewed_at` (reusing `listing_seen.first_seen`). Opening a search
+  (`/searches/{id}/open`) runs it via the shared `_run_and_render` helper and
   `touch_saved_search` resets the count. Saving stamps `last_viewed_at = now`, so a
-  fresh save shows 0 new (nothing is newer than the moment you saved).
+  fresh save shows 0 new (nothing is newer than the moment you saved). NOTE: email
+  alerts (below) still match **non-transit** in `dispatch_alerts` — a known inconsistency
+  with these counts (alerts can fire for a listing outside the commute limit).
 - **Saved-search email alerts.** Opt-in (`services/alerts.py`). Two independent
   halves: the **sending mailbox** (SMTP plumbing, `.env` `SMTP_*`, gated by
   `settings.smtp_configured` = host present) and the **recipient** (set in-app on the

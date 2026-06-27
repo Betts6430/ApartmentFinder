@@ -131,29 +131,19 @@ async def _scrape_all(filters: SearchFilters) -> list[Listing]:
     return deduped
 
 
-async def run_search(filters: SearchFilters) -> SearchResult:
-    """Top-level search orchestration: cache → scrape → filter → transit enrich → final filter."""
-    warnings: list[str] = []
-    key = filters.scrape_cache_key()
-    listings = await cache.get_cached_search(key)
-    if listings is None:
-        log.info("scrape-pool cache miss — running %d scrapers", len(SCRAPERS))
-        listings = await _scrape_all(filters)
-        if listings:
-            await cache.save_search(key, listings)
-            # Stamp first-seen / advance the scrape boundary for new-listing badges,
-            # and append any changed prices for drop detection.
-            await cache.record_scrape([l.id for l in listings])
-            await cache.record_prices(listings)
-            # New pool → check saved searches and email any new matches. Lazy import
-            # avoids a circular dependency (alerts.py's poller imports run_search).
-            from app.services.alerts import dispatch_alerts
-            await dispatch_alerts(listings)
-    else:
-        log.info("scrape-pool cache hit (%d listings)", len(listings))
+async def filter_and_enrich(
+    filters: SearchFilters, pool: list[Listing]
+) -> tuple[list[Listing], list[str]]:
+    """Apply non-transit filters, then the commute filter (geocode + transit enrich),
+    to an already-loaded pool. Returns (survivors, warnings).
 
+    Shared by `run_search` and the saved-searches match count so the two always agree
+    — the count would otherwise have to skip the commute filter and over-report.
+    Mutates `transit_minutes` on the matched listings (in-memory pool objects).
+    """
+    warnings: list[str] = []
     # Apply non-transit filters first so we only pay for transit enrichment on survivors.
-    survivors = [l for l in listings if l.matches(filters, include_transit=False)]
+    survivors = [l for l in pool if l.matches(filters, include_transit=False)]
 
     if filters.transit_target:
         dest = await transit.geocode(filters.transit_target)
@@ -181,6 +171,30 @@ async def run_search(filters: SearchFilters) -> SearchResult:
                     if l.transit_minutes is not None
                     and l.transit_minutes <= filters.transit_minutes_max
                 ]
+    return survivors, warnings
+
+
+async def run_search(filters: SearchFilters) -> SearchResult:
+    """Top-level search orchestration: cache → scrape → filter → transit enrich → final filter."""
+    key = filters.scrape_cache_key()
+    listings = await cache.get_cached_search(key)
+    if listings is None:
+        log.info("scrape-pool cache miss — running %d scrapers", len(SCRAPERS))
+        listings = await _scrape_all(filters)
+        if listings:
+            await cache.save_search(key, listings)
+            # Stamp first-seen / advance the scrape boundary for new-listing badges,
+            # and append any changed prices for drop detection.
+            await cache.record_scrape([l.id for l in listings])
+            await cache.record_prices(listings)
+            # New pool → check saved searches and email any new matches. Lazy import
+            # avoids a circular dependency (alerts.py's poller imports run_search).
+            from app.services.alerts import dispatch_alerts
+            await dispatch_alerts(listings)
+    else:
+        log.info("scrape-pool cache hit (%d listings)", len(listings))
+
+    survivors, warnings = await filter_and_enrich(filters, listings or [])
 
     # Enrich with the most recent price drop (if any) for badges + the drops sort.
     drops = await cache.get_price_drops([l.id for l in survivors])
