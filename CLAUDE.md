@@ -159,10 +159,11 @@ run.sh, requirements.txt
   **Rentals.ca** (~30%, `node.contact.phoneNumber`) expose the number in their
   search feed, so it's captured at scrape time. **Zumper** almost never includes it
   in the feed — the number lives on the per-listing **detail page**, so it's
-  resolved **lazily on demand**: the contact button for a Zumper listing reads
-  "Show phone number" and, on click, hits `GET /api/listings/{id}/phone`, which
-  fetches+parses the detail page and returns the rendered panel (or link-out) HTML
-  to swap in. This keeps the bulk scrape fast and spends a request only on listings
+  resolved **lazily on demand**: a Zumper listing shows the same **"Contact"** button
+  as the others (no implementation detail in the label), and its *first* click hits
+  `GET /api/listings/{id}/phone`, which fetches+parses the detail page and returns the
+  rendered panel (or link-out) HTML to swap in (the shared JS shows a "Loading…" state
+  meanwhile, then relabels to the standard Contact toggle). This keeps the bulk scrape fast and spends a request only on listings
   the user actually pursues (the *lazy on-click* choice over eager per-page /
   bulk-on-scrape). **`_extract_detail_phone` checks several locations** — the number
   is usually at `detail.entity.data.listing_agents[].phone`, sometimes the older
@@ -348,13 +349,25 @@ stay off until `SMTP_HOST` + `ALERT_EMAIL_TO` are set (Gmail: App Password +
 - `git push origin main` just works from this repo. Default branch is `main`.
 - `.gitignore` excludes `.env`, `.venv/`, `data/`, `.claude/settings.local.json`.
 
-## Status (as of 2026-06-26)
+## Status (as of 2026-06-27)
 
 Working: all four scrapers (RentFaster, Rentals.ca, Zumper, Kijiji), pool caching, ranking, blank-field-tolerant search,
 commute filter (geocode + Distance Matrix), location autocomplete, cross-source
-dedupe, paginated results with Grid/List/Map views, the contact button, saved-listing
+dedupe, paginated results with Grid/List/Map views (Map needs the **Maps JavaScript
+API** enabled — now on), the contact button, saved-listing
 favorites, "New" listing badges, address normalization, price-drop tracking,
-saved searches with new-match counts, and opt-in saved-search email alerts.
+saved searches with new-match counts, and opt-in saved-search email alerts
+(SMTP + Settings-page recipient + test-email button). A `pytest` suite covers the
+pure logic — run with `./run_tests.sh`.
+
+This session (2026-06-27): enabled the Maps JS API for the map view; **saved-search
+email alerts** end-to-end (alerts.py, Settings page, test button, commute-aware
+matching shared with the in-app counts via `filter_and_enrich`); a **codebase-review
+pass** (geocode error handling; fixed transit `departure_time`; `first_seen`-based
+Newest sort; `/searches` parallelized; DB pruning + WAL; `datetime.utcnow` →
+`timeutil`; misc cleanups; the test suite); and the **Zumper "Contact" fix**
+(`listing_agents`/`crm_phone` extraction + result-aware caching so transient blocks
+aren't cached as permanent misses).
 
 Recent fixes: blank optional numeric fields no longer 422; Zumper unknown-pets bug;
 batched transit cache lookups; dead-code cleanup; location autocomplete;
@@ -370,7 +383,7 @@ save/contact actions, compacted List view; shared rendering moved to `_macros.ht
 **phone capture for Rentals.ca** via shared
 `normalize_phone`, so the contact panel now appears for many more listings;
 **lazy on-demand Zumper phone lookup** (detail-page fetch, cached in `contact_cache`)
-behind a "Show phone number" button; `normalize_phone` now keeps extensions
+behind the shared "Contact" button; `normalize_phone` now keeps extensions
 (`phone_ext`), so call-center/PM numbers aren't dropped (v6 pool); contact panel,
 list-row, and view-toggle UI polish (send-icon button, image-height rows, icon
 toggles); **price-drop tracking** ("↓ $X" badge + "Price drops" sort via
