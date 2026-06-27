@@ -151,32 +151,74 @@ def _parse_node(node: dict[str, Any]) -> Optional[Listing]:
 
 def _extract_detail_phone(state: dict[str, Any]) -> Optional[str]:
     """Pull the contact number out of a Zumper *detail* page's preloaded state.
-    It lives at detail.entity.data.agents[].phone (often the agent's direct line)."""
+
+    The number lives in different places depending on the listing. Most carry it at
+    `detail.entity.data.listing_agents[].phone`; a minority use the older `agents[]`
+    array; others only expose `crm_phone` (at the data level or on
+    `detail.activeListings[]`). We were checking *only* `agents[]`, so the common
+    `listing_agents` case looked like "no number" — the main reason the button so
+    often fell back to link-out. Checked most- to least-specific, first hit wins."""
     try:
-        data = state.get("detail", {}).get("entity", {}).get("data", {}) or {}
-        for agent in data.get("agents") or []:
-            if agent.get("phone"):
-                return str(agent["phone"])
+        detail = state.get("detail", {}) or {}
+        data = detail.get("entity", {}).get("data", {}) or {}
+        for arr_key in ("listing_agents", "agents"):
+            for agent in data.get(arr_key) or []:
+                if isinstance(agent, dict) and agent.get("phone"):
+                    return str(agent["phone"])
+        for key in ("crm_phone", "phone", "contact_phone", "phone_number"):
+            if data.get(key):
+                return str(data[key])
+        for al in detail.get("activeListings") or []:
+            if isinstance(al, dict) and al.get("crm_phone"):
+                return str(al["crm_phone"])
+        contact = data.get("contact") or {}
+        if isinstance(contact, dict) and contact.get("phone"):
+            return str(contact["phone"])
     except Exception:
         pass
     return None
 
 
-async def fetch_listing_phone(source_url: str, impersonate: str = "chrome124") -> Optional[str]:
-    """Fetch a single Zumper detail page and return its raw contact number (or None).
-    Used for lazy, on-demand phone lookup so the bulk scrape stays fast."""
+async def fetch_listing_phone(
+    source_url: str, impersonate: str = "chrome124", attempts: int = 3
+) -> tuple[bool, Optional[str]]:
+    """Fetch a Zumper detail page and resolve its contact number. Returns
+    `(fetched_ok, raw_phone)`:
+
+    - `(True, "...")`  — page parsed, a number was found.
+    - `(True, None)`   — page parsed cleanly, but the listing genuinely has no
+                         number (a real miss the caller can cache permanently).
+    - `(False, None)`  — the fetch/parse failed (HTTP error, timeout, or a
+                         Cloudflare challenge with no preloaded state). This is
+                         *transient*, so the caller must NOT cache it — a later
+                         retry can succeed. Retried `attempts` times first.
+
+    Conflating the last two was the bug behind "sometimes it works": a transient
+    block got cached as a permanent miss, so the button stayed link-out forever."""
     def _do() -> Optional[str]:
         with cr.Session(impersonate=impersonate) as s:
             r = s.get(source_url, timeout=25)
             r.raise_for_status()
         state = _extract_state(r.text)
-        return _extract_detail_phone(state) if state else None
+        if not state:
+            # No preloaded state usually means a challenge/blocked page, not a
+            # real "no number" — raise so it's treated as transient (retryable).
+            raise ValueError("no __PRELOADED_STATE__ on detail page (likely blocked)")
+        return _extract_detail_phone(state)
 
-    try:
-        return await asyncio.to_thread(_do)
-    except Exception as e:
-        log.warning("zumper detail phone fetch failed for %s: %s", source_url, e)
-        return None
+    for attempt in range(attempts):
+        try:
+            return True, await asyncio.to_thread(_do)
+        except Exception as e:
+            if attempt + 1 < attempts:
+                await asyncio.sleep(0.6 * (attempt + 1))  # brief backoff, then retry
+                continue
+            log.warning(
+                "zumper detail phone fetch failed for %s after %d attempts: %s",
+                source_url, attempts, e,
+            )
+            return False, None
+    return False, None
 
 
 class ZumperScraper(Scraper):

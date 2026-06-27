@@ -158,15 +158,24 @@ run.sh, requirements.txt
   "(844) 332-5934 ext. 4525" are kept (not dropped). **RentFaster** (~95%) and
   **Rentals.ca** (~30%, `node.contact.phoneNumber`) expose the number in their
   search feed, so it's captured at scrape time. **Zumper** almost never includes it
-  in the feed — the number lives on the per-listing **detail page**
-  (`detail.entity.data.agents[].phone`, often the agent's direct line), so it's
+  in the feed — the number lives on the per-listing **detail page**, so it's
   resolved **lazily on demand**: the contact button for a Zumper listing reads
   "Show phone number" and, on click, hits `GET /api/listings/{id}/phone`, which
-  fetches+parses the detail page, caches the result forever in `contact_cache`
-  (misses included, as an empty `phone`, so we never re-fetch), and returns the
-  rendered panel (or link-out) HTML to swap in. This keeps the bulk scrape fast and
-  spends a request only on listings the user actually pursues (the *lazy on-click*
-  choice over eager per-page / bulk-on-scrape). **Kijiji** never exposes a number in
+  fetches+parses the detail page and returns the rendered panel (or link-out) HTML
+  to swap in. This keeps the bulk scrape fast and spends a request only on listings
+  the user actually pursues (the *lazy on-click* choice over eager per-page /
+  bulk-on-scrape). **`_extract_detail_phone` checks several locations** — the number
+  is usually at `detail.entity.data.listing_agents[].phone`, sometimes the older
+  `agents[]`, sometimes only `crm_phone` (at `data` level or on
+  `detail.activeListings[]`). (Reading *only* `agents[]` was the bug behind "the
+  button only sometimes works" — most listings use `listing_agents`, so they looked
+  like "no number" and fell back to link-out.) **Caching is result-aware**
+  (`fetch_listing_phone` returns `(fetched_ok, raw)`): a *definitive* outcome — a
+  number, or a cleanly-parsed page with genuinely none — is cached forever in
+  `contact_cache` (a miss as empty `phone`); a *transient* failure (timeout / a
+  Cloudflare challenge with no preloaded state) is **retried** (3 attempts) and, if
+  still failing, **not cached**, so a later click can succeed instead of being stuck
+  on link-out forever (the second half of the "sometimes works" bug). **Kijiji** never exposes a number in
   its feed, so Kijiji listings always fall through to the "Contact on kijiji →"
   link-out. The Zumper "fetch the detail page" trick does **not** work for Kijiji: its
   detail page only carries a **masked** number (`posterInfo.phoneNumber = "780809xxxx"`),

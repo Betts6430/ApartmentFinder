@@ -263,8 +263,10 @@ async def toggle_favorite(id: str = Form(...)) -> JSONResponse:
 async def listing_phone(listing_id: str, align: str = "left") -> HTMLResponse:
     """Lazily resolve a listing's contact number (currently Zumper, whose number
     lives on the per-listing detail page) and return the contact panel HTML to
-    swap in. Results — including misses — are cached forever, so repeat clicks
-    and re-renders are instant and we never re-hit the source for the same id."""
+    swap in. A *definitive* result (number found, or a cleanly-fetched page with no
+    number) is cached forever so repeat clicks are instant. A *transient* failure
+    (timeout / Cloudflare block) is deliberately NOT cached, so a later click retries
+    instead of being stuck on link-out forever."""
     found = await cache.get_listings([listing_id])
     if not found:
         return HTMLResponse("Listing not found", status_code=404)
@@ -273,11 +275,14 @@ async def listing_phone(listing_id: str, align: str = "left") -> HTMLResponse:
     cached = await cache.get_contact(listing_id)
     if cached is not None:
         phone, ext = cached
-    else:
-        raw = None
-        if listing.source == "zumper":
-            raw = await fetch_listing_phone(listing.source_url)
+    elif listing.source == "zumper":
+        ok, raw = await fetch_listing_phone(listing.source_url)
         phone, ext = normalize_phone(raw)
+        if ok:
+            await cache.save_contact(listing_id, phone, ext)  # found or genuinely absent
+        # else: transient fetch failure — leave uncached so the next click retries.
+    else:
+        phone, ext = None, None
         await cache.save_contact(listing_id, phone, ext)
 
     return templates.get_template("_contact_panel.html").render(
