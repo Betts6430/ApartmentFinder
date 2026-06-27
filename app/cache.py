@@ -104,6 +104,16 @@ CREATE INDEX IF NOT EXISTS idx_search_cache_created_at ON search_cache(created_a
 async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(_SCHEMA)
+        # Migration: `last_alerted_at` anchors email alerts independently of viewing.
+        # Backfill existing rows to last_viewed_at so old searches don't blast an alert
+        # for every listing already in the pool the first time the poller runs.
+        async with db.execute("PRAGMA table_info(saved_searches)") as cur:
+            cols = {r[1] for r in await cur.fetchall()}
+        if "last_alerted_at" not in cols:
+            await db.execute("ALTER TABLE saved_searches ADD COLUMN last_alerted_at TEXT")
+            await db.execute(
+                "UPDATE saved_searches SET last_alerted_at = last_viewed_at WHERE last_alerted_at IS NULL"
+            )
         await db.commit()
 
 
@@ -267,6 +277,28 @@ async def get_favorites() -> list[Listing]:
 
 # --- New-listing tracking ----------------------------------------------------
 
+async def get_meta(key: str) -> Optional[str]:
+    """Read a value from the small key/value store (None if unset)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT value FROM meta WHERE key = ?", (key,)) as cur:
+            row = await cur.fetchone()
+    return row[0] if row else None
+
+
+async def set_meta(key: str, value: str) -> None:
+    """Write a value into the small key/value store."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value)
+        )
+        await db.commit()
+
+
+# Key under which the saved-search alert recipient is stored (set via the Settings
+# page; overrides the .env ALERT_EMAIL_TO fallback). See services/alerts.py.
+ALERT_EMAIL_KEY = "alert_email_to"
+
+
 async def record_scrape(ids: list[str]) -> None:
     """Record a fresh scrape: stamp first-seen for any new ids, and advance the
     scrape boundary so the just-appeared listings can be flagged as "new". The
@@ -411,8 +443,9 @@ async def add_saved_search(name: str, filters: SearchFilters) -> int:
     now = datetime.utcnow().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
-            "INSERT INTO saved_searches (name, filters, created_at, last_viewed_at) VALUES (?, ?, ?, ?)",
-            (name, filters.model_dump_json(), now, now),
+            "INSERT INTO saved_searches (name, filters, created_at, last_viewed_at, last_alerted_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (name, filters.model_dump_json(), now, now, now),
         )
         await db.commit()
         return cur.lastrowid
@@ -425,13 +458,17 @@ def _row_to_saved(r) -> dict:
         "filters": SearchFilters.model_validate_json(r[2]),
         "created_at": r[3],
         "last_viewed_at": r[4],
+        "last_alerted_at": r[5],
     }
+
+
+_SAVED_COLS = "id, name, filters, created_at, last_viewed_at, last_alerted_at"
 
 
 async def get_saved_searches() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT id, name, filters, created_at, last_viewed_at FROM saved_searches ORDER BY created_at DESC"
+            f"SELECT {_SAVED_COLS} FROM saved_searches ORDER BY created_at DESC"
         ) as cur:
             rows = await cur.fetchall()
     return [_row_to_saved(r) for r in rows]
@@ -440,11 +477,21 @@ async def get_saved_searches() -> list[dict]:
 async def get_saved_search(search_id: int) -> Optional[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT id, name, filters, created_at, last_viewed_at FROM saved_searches WHERE id = ?",
+            f"SELECT {_SAVED_COLS} FROM saved_searches WHERE id = ?",
             (search_id,),
         ) as cur:
             row = await cur.fetchone()
     return _row_to_saved(row) if row else None
+
+
+async def mark_search_alerted(search_id: int) -> None:
+    """Stamp a saved search as just-alerted, so its matches won't re-notify."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE saved_searches SET last_alerted_at = ? WHERE id = ?",
+            (datetime.utcnow().isoformat(), search_id),
+        )
+        await db.commit()
 
 
 async def delete_saved_search(search_id: int) -> None:
@@ -479,3 +526,21 @@ async def count_listing_seen_after(ids: list[str], since: str) -> int:
             ) as cur:
                 total += (await cur.fetchone())[0]
     return total
+
+
+async def list_listing_seen_after(ids: list[str], since: str) -> set[str]:
+    """Which of the given listing ids were first seen strictly after `since` —
+    the new-match subset (for alert emails), not just a count."""
+    if not ids:
+        return set()
+    out: set[str] = set()
+    async with aiosqlite.connect(DB_PATH) as db:
+        for i in range(0, len(ids), _SQLITE_MAX_VARS):
+            chunk = ids[i : i + _SQLITE_MAX_VARS]
+            ph = ",".join("?" * len(chunk))
+            async with db.execute(
+                f"SELECT id FROM listing_seen WHERE id IN ({ph}) AND first_seen > ?",
+                [*chunk, since],
+            ) as cur:
+                out.update(r[0] for r in await cur.fetchall())
+    return out

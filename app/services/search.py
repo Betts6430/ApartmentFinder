@@ -145,6 +145,10 @@ async def run_search(filters: SearchFilters) -> SearchResult:
             # and append any changed prices for drop detection.
             await cache.record_scrape([l.id for l in listings])
             await cache.record_prices(listings)
+            # New pool → check saved searches and email any new matches. Lazy import
+            # avoids a circular dependency (alerts.py's poller imports run_search).
+            from app.services.alerts import dispatch_alerts
+            await dispatch_alerts(listings)
     else:
         log.info("scrape-pool cache hit (%d listings)", len(listings))
 

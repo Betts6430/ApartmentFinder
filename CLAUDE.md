@@ -48,11 +48,13 @@ Then open **http://localhost:8000**. Stop with `pkill -f "uvicorn app.main:app"`
 ```
 app/
   main.py            FastAPI app + routes (see below)
-  config.py          pydantic-settings; reads .env (GOOGLE_MAPS_API_KEY, CACHE_DIR, SEARCH_CACHE_TTL_HOURS)
+  config.py          pydantic-settings; reads .env (GOOGLE_MAPS_API_KEY, CACHE_DIR, SEARCH_CACHE_TTL_HOURS,
+                     SMTP_* + ALERT_EMAIL_TO + ALERT_POLL_MINUTES for saved-search alerts)
   models.py          PropertyType/SortBy enums; SearchFilters + Listing models; Listing.matches();
                      normalize_address() + address field validator (one house style)
   cache.py           SQLite cache: listings, search_cache, transit_cache, geocode_cache,
-                     favorites, listing_seen, meta, contact_cache, price_history, saved_searches
+                     favorites, listing_seen, meta (get_meta/set_meta k/v; holds the alert
+                     recipient), contact_cache, price_history, saved_searches (+ last_alerted_at)
   scrapers/
     base.py          Scraper ABC
     __init__.py      SCRAPERS registry (RentFaster, RentalsCa, Zumper)
@@ -64,10 +66,12 @@ app/
     search.py        run_search(): cache -> scrape -> filter -> transit enrich -> filter -> rank
     ranking.py       value/location/niceness scores + sort_listings()
     transit.py       geocode() + compute_transit() (Google Maps)
+    alerts.py        dispatch_alerts() emails new saved-search matches; alert_poller() background re-scrape
   templates/         base.html (header + "Saved" nav + global delegated JS for hearts/contact/copy),
                      index.html (search form + autocomplete), results.html (Grid/List/Map views,
                      pagination + Save-search), favorites.html (saved listings),
-                     searches.html (saved searches + new-match counts), _macros.html (shared card/row +
+                     searches.html (saved searches + new-match counts),
+                     settings.html (alert-recipient email + SMTP status), _macros.html (shared card/row +
                      fav_button / new_badge / contact_block / contact_panel / specs / amenities_str),
                      _contact_panel.html (fragment returned by the lazy phone endpoint)
   static/            (empty; mounted at /static)
@@ -86,6 +90,11 @@ run.sh, requirements.txt
 - `POST /api/searches` (form `name`, `filters` = SearchFilters JSON) — save a search
 - `GET /searches/{id}/open` — run a saved search (renders results.html) + mark viewed
 - `POST /searches/{id}/delete` — delete a saved search (303 redirect)
+- `GET /settings` — settings page (alert-recipient email + SMTP/poller status)
+- `POST /settings` (form `alert_email`) — save the alert recipient to the DB (blank
+  clears it; invalid email re-renders 400); 303 redirect to `/settings?saved=1`
+- `POST /api/settings/test-email` — send a test email to the saved recipient
+  (`alerts.send_test_email`); returns `{"ok": true, "to": ...}` or `{"ok": false, "error": ...}`
 - `GET /api/listings/{id}/phone` — lazily resolve a listing's contact number (Zumper:
   fetch its detail page) and return the rendered contact-panel HTML (or a link-out
   fallback) to swap in. Result cached forever in `contact_cache` (misses too).
@@ -200,6 +209,32 @@ run.sh, requirements.txt
   search (`/searches/{id}/open`) runs it via the shared `_run_and_render` helper and
   `touch_saved_search` resets the count. Saving stamps `last_viewed_at = now`, so a
   fresh save shows 0 new (nothing is newer than the moment you saved).
+- **Saved-search email alerts.** Opt-in (`services/alerts.py`). Two independent
+  halves: the **sending mailbox** (SMTP plumbing, `.env` `SMTP_*`, gated by
+  `settings.smtp_configured` = host present) and the **recipient** (set in-app on the
+  **Settings page**, stored in the `meta` k/v table under `cache.ALERT_EMAIL_KEY`;
+  `.env` `ALERT_EMAIL_TO` is only a fallback). `alerts.resolve_recipient()` returns the
+  DB value or that fallback; `dispatch_alerts` no-ops unless both SMTP is configured and
+  a recipient resolves. (Recipient-in-DB so it can be changed without editing `.env` or
+  restarting — single-user app, so there's exactly one global recipient, not per-user;
+  real multi-user would need accounts.) Alerts fire from **one**
+  dispatch point: after a *fresh scrape*, `run_search` calls `dispatch_alerts(pool)`,
+  which for each saved search matches the pool (`matches`, **non-transit** — same
+  reason as the count) and emails the subset first seen since that search's
+  `last_alerted_at` (`cache.list_listing_seen_after`), then `mark_search_alerted`
+  stamps now so they never re-notify. `last_alerted_at` is a **separate** column from
+  `last_viewed_at` so emailing and in-app viewing don't interfere (opening a search
+  resets the badge but not the alert baseline, and vice-versa); the migration backfills
+  it to `last_viewed_at`, and new saves seed it to `now` (no blast on first save).
+  Email is plain-text via stdlib `smtplib` + STARTTLS, sent in a thread
+  (`asyncio.to_thread`), **no new dependency**. Dispatch failures are caught/logged,
+  never raised — a bad SMTP config can't break a search. Because the pool only
+  refreshes on a user search, a background **`alert_poller`** (started in `main.py`
+  lifespan when `ALERT_POLL_MINUTES > 0`) forces a `run_search(SearchFilters())` on
+  that cadence so alerts arrive while the app is idle — dispatch still happens inside
+  `run_search`, so the poller is just a periodic trigger (set the interval ≥ the cache
+  TTL or it mostly hits cache and finds nothing new). No emails are ever sent unless a
+  saved search has genuinely new matches.
 - **Address normalization.** Sources spell addresses inconsistently
   (`St`/`Street`/`ST`, `NW`/`Northwest`, ALL CAPS, ordinal `37th`). `normalize_address()`
   + a `Listing` **field validator** (`models.py`) coerce one house style: street
@@ -263,9 +298,14 @@ away from them.
 GOOGLE_MAPS_API_KEY=...
 CACHE_DIR=./data
 SEARCH_CACHE_TTL_HOURS=3
+# optional saved-search email alerts (commented examples in .env):
+SMTP_HOST=  SMTP_PORT=587  SMTP_USER=  SMTP_PASSWORD=  SMTP_FROM=
+ALERT_EMAIL_TO=  ALERT_POLL_MINUTES=0
 ```
 Update the key by editing `.env` directly (don't paste secrets into chat). The
-running app must be restarted (or it auto-reloads) to pick up a new key.
+running app must be restarted (or it auto-reloads) to pick up a new key. Alerts
+stay off until `SMTP_HOST` + `ALERT_EMAIL_TO` are set (Gmail: App Password +
+`smtp.gmail.com:587`); set `ALERT_POLL_MINUTES` > 0 to auto-check while idle.
 
 ## Git / pushing
 
@@ -283,8 +323,8 @@ running app must be restarted (or it auto-reloads) to pick up a new key.
 Working: all four scrapers (RentFaster, Rentals.ca, Zumper, Kijiji), pool caching, ranking, blank-field-tolerant search,
 commute filter (geocode + Distance Matrix), location autocomplete, cross-source
 dedupe, paginated results with Grid/List/Map views, the contact button, saved-listing
-favorites, "New" listing badges, address normalization, price-drop tracking, and
-saved searches with new-match counts.
+favorites, "New" listing badges, address normalization, price-drop tracking,
+saved searches with new-match counts, and opt-in saved-search email alerts.
 
 Recent fixes: blank optional numeric fields no longer 422; Zumper unknown-pets bug;
 batched transit cache lookups; dead-code cleanup; location autocomplete;
@@ -308,7 +348,12 @@ toggles); **price-drop tracking** ("↓ $X" badge + "Price drops" sort via
 **new-match counts** since last viewed; **input hardening** (unknown `sort_by` /
 `property_types` no longer 500 — they degrade; saved-search `filters_json` is
 script-safe-escaped); **Kijiji scraper** (`__NEXT_DATA__` Apollo cache, ~1700 Edmonton
-listings, cents/×10-bath decode, totalCount-driven pagination, link-out contact; v7 pool).
+listings, cents/×10-bath decode, totalCount-driven pagination, link-out contact; v7 pool);
+**Maps JavaScript API** enabled (the Map view's separate API — gray-box symptom when off);
+**saved-search email alerts** (opt-in SMTP; `services/alerts.py` `dispatch_alerts` after a
+fresh scrape, `last_alerted_at` baseline, background `alert_poller`); **Settings page**
+(`/settings`) to set the alert recipient email in-app (DB-stored, `.env` fallback) +
+a **"Send test email"** button (`/api/settings/test-email` → `alerts.send_test_email`).
 
 ### Possible next steps (not started)
 - Cache `/api/places/autocomplete` responses (currently every keystroke-after-debounce
@@ -316,7 +361,8 @@ listings, cents/×10-bath decode, totalCount-driven pagination, link-out contact
 - More scrapers: Places4Students (U of A–relevant), liv.rent/RentSeeker/4rent (breadth).
   Apartments.com / Zillow stay deferred (Cloudflare-hard; Zillow has ~no Canadian
   rentals). Facebook Marketplace skipped (login + account-ban risk).
-- Email/push alerts for saved-search new matches (in-app counts exist; no notifications yet).
+- ~~Email alerts for saved-search new matches~~ — **done** (opt-in SMTP, see above).
+  Still open: push/desktop notifications, and an HTML (vs plain-text) email template.
 - Consider Routes API migration only if legacy Distance Matrix gets sunset (mind the
   transit caveat above).
 ```

@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Settings — ApartmentFinder{% endblock %}
+{% block content %}
+<div class="flex flex-wrap items-start justify-between gap-3 mb-4">
+  <h1 class="text-2xl font-semibold">Settings</h1>
+  <a href="/" class="text-blue-600 hover:underline text-sm whitespace-nowrap">← New search</a>
+</div>
+
+{% if saved %}
+<div class="mb-4 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+  Saved. {% if email %}Saved-search alerts will be sent to <span class="font-medium">{{ email }}</span>.{% else %}The alert email override was cleared.{% endif %}
+</div>
+{% endif %}
+{% if error %}
+<div class="mb-4 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">{{ error }}</div>
+{% endif %}
+
+<div class="bg-white border border-slate-200 rounded-xl shadow-sm p-5 max-w-xl">
+  <h2 class="font-semibold text-slate-900">Saved-search email alerts</h2>
+  <p class="mt-1 text-sm text-slate-500">
+    Where to email you when one of your
+    <a href="/searches" class="text-blue-600 hover:underline">saved searches</a>
+    gets new matches. Leave blank to turn alerts off.
+  </p>
+
+  <form method="post" action="/settings" class="mt-4">
+    <label for="alert_email" class="block text-sm font-medium text-slate-700 mb-1">Alert email</label>
+    <div class="flex gap-2">
+      <input id="alert_email" name="alert_email" type="email" inputmode="email"
+             value="{{ email }}" placeholder="you@example.com"
+             class="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+      <button type="submit" class="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">Save</button>
+    </div>
+    {% if not email and env_fallback %}
+    <p class="mt-2 text-xs text-slate-500">Currently falling back to <span class="font-medium">{{ env_fallback }}</span> (from <code>.env</code>).</p>
+    {% endif %}
+  </form>
+
+  <div class="mt-5 pt-4 border-t border-slate-100 text-sm">
+    {% if smtp_configured %}
+      <div class="flex items-center gap-2 text-emerald-700">
+        <span class="inline-block h-2 w-2 rounded-full bg-emerald-500"></span>
+        Mail sending is configured.
+      </div>
+      <p class="mt-1 text-slate-500">
+        {% if poll_minutes and poll_minutes > 0 %}
+          Auto-checking for new matches every {{ poll_minutes }} min.
+        {% else %}
+          Alerts are checked after each fresh search. Set <code>ALERT_POLL_MINUTES</code> in <code>.env</code> to also check automatically while idle.
+        {% endif %}
+      </p>
+      <div class="mt-3 flex items-center gap-3">
+        <button type="button" id="test-email-btn"
+                class="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed">
+          Send test email
+        </button>
+        <span id="test-email-result" class="text-sm" role="status" aria-live="polite"></span>
+      </div>
+      <p class="mt-1 text-xs text-slate-400">Sends to your saved alert email. Save a new address above first if you just changed it.</p>
+    {% else %}
+      <div class="flex items-center gap-2 text-amber-700">
+        <span class="inline-block h-2 w-2 rounded-full bg-amber-500"></span>
+        Mail sending isn't set up yet.
+      </div>
+      <p class="mt-1 text-slate-500">
+        Add SMTP credentials (<code>SMTP_HOST</code>, <code>SMTP_USER</code>, <code>SMTP_PASSWORD</code>) to <code>.env</code> to enable sending. Until then, alerts can't go out even with an address set here.
+      </p>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+  (function () {
+    const btn = document.getElementById('test-email-btn');
+    if (!btn) return;
+    const result = document.getElementById('test-email-result');
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      result.textContent = 'Sending…';
+      result.className = 'text-sm text-slate-500';
+      try {
+        const r = await fetch('/api/settings/test-email', { method: 'POST' });
+        const data = await r.json();
+        if (data.ok) {
+          result.textContent = 'Sent to ' + data.to + ' — check your inbox (and spam).';
+          result.className = 'text-sm text-emerald-700';
+        } else {
+          result.textContent = data.error || 'Could not send.';
+          result.className = 'text-sm text-rose-700';
+        }
+      } catch (e) {
+        result.textContent = 'Request failed. Is the app still running?';
+        result.className = 'text-sm text-rose-700';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  })();
+</script>
+{% endblock %}

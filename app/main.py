@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -30,7 +31,17 @@ PAGE_SIZE = 60
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await cache.init_db()
+    poller = None
+    if settings.smtp_configured and settings.alert_poll_minutes > 0:
+        import asyncio
+
+        from app.services.alerts import alert_poller
+        poller = asyncio.create_task(alert_poller())
+    elif settings.smtp_configured:
+        log.info("SMTP configured (poller off: set ALERT_POLL_MINUTES to auto-check)")
     yield
+    if poller:
+        poller.cancel()
 
 
 app = FastAPI(lifespan=lifespan, title="ApartmentFinder")
@@ -379,3 +390,49 @@ async def open_search(request: Request, search_id: int) -> HTMLResponse:
 async def remove_search(search_id: int) -> RedirectResponse:
     await cache.delete_saved_search(search_id)
     return RedirectResponse("/searches", status_code=303)
+
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+async def _settings_context(request: Request, **extra) -> dict:
+    ctx = {
+        "request": request,
+        "email": await cache.get_meta(cache.ALERT_EMAIL_KEY) or "",
+        "smtp_configured": settings.smtp_configured,
+        "env_fallback": settings.alert_email_to,
+        "poll_minutes": settings.alert_poll_minutes,
+    }
+    ctx.update(extra)
+    return ctx
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request, saved: int = 0) -> HTMLResponse:
+    return templates.TemplateResponse(
+        "settings.html", await _settings_context(request, saved=bool(saved))
+    )
+
+
+@app.post("/settings")
+async def save_settings(request: Request, alert_email: str = Form("")) -> Response:
+    email = alert_email.strip()
+    if email and not _EMAIL_RE.match(email):
+        return templates.TemplateResponse(
+            "settings.html",
+            await _settings_context(request, email=email, error="That doesn't look like a valid email address."),
+            status_code=400,
+        )
+    # Blank clears the override (alerts then fall back to .env ALERT_EMAIL_TO, if any).
+    await cache.set_meta(cache.ALERT_EMAIL_KEY, email)
+    return RedirectResponse("/settings?saved=1", status_code=303)
+
+
+@app.post("/api/settings/test-email")
+async def test_email() -> JSONResponse:
+    """Send a test email to the saved alert recipient; returns {ok, to|error}."""
+    from app.services.alerts import send_test_email
+    ok, detail = await send_test_email()
+    if ok:
+        return JSONResponse({"ok": True, "to": detail})
+    return JSONResponse({"ok": False, "error": detail}, status_code=400)
