@@ -45,7 +45,12 @@ watched** — restart the app to pick those up.
 
 Unit tests cover the pure logic (cross-source dedupe, address/phone normalization,
 sqft sanitizing, ranking/sorting incl. the first_seen-based "Newest", `matches()`,
-transit departure-time helper). `run_tests.sh` sets `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`
+transit departure-time helper, scraper-health eval) and **per-source parse logic** —
+each scraper has a `test_<source>.py` with faithful synthetic fixtures asserting its
+decode quirks (RentFaster string-price/"studio"→0; Rentals.ca range-min + `[lng,lat]`
+order; Zumper detail-phone; Kijiji cents-price/×10-baths/`_split_address`; RentCanada
+min-range + amenity-slug mapping), so a refactor that breaks a parser fails a test
+instead of silently dropping that source. `run_tests.sh` sets `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`
 to isolate from unrelated **system pytest plugins** (ROS's `launch_testing` leaks in via
 global site-packages and fails to import `lark`) — run pytest that way, not bare.
 
@@ -422,7 +427,9 @@ on a cache miss. And started a **resilience pass**: **scraper health monitoring*
 scrape, a source flagged **down** when its latest count collapses vs its recent norm
 (median-based), logged on scrape + shown on the Settings page (10 new unit tests;
 verified live + a temp-DB chain test catching both →0 and partial-collapse breakage).
-Still open in the pass: parse-test fixtures for the 3 scrapers without them.
+Then completed the pass with **per-source parse-test fixtures** — RentFaster,
+Rentals.ca, and Kijiji each got a `test_<source>.py` (28 tests) so all 5 scrapers now
+have parse coverage (93 tests total). Build considered feature-complete for its job.
 
 Earlier this session (2026-06-27): enabled the Maps JS API for the map view; **saved-search
 email alerts** end-to-end (alerts.py, Settings page, test button, commute-aware
@@ -463,13 +470,10 @@ fresh scrape, `last_alerted_at` baseline, background `alert_poller`); **Settings
 a **"Send test email"** button (`/api/settings/test-email` → `alerts.send_test_email`).
 
 ### Possible next steps (not started)
-- **Resilience pass** (in progress): ~~scraper health monitoring~~ — **done**
-  (`scrape_health` + `services/health.py` + Settings display, see above). Still open:
-  **parse-test fixtures** for the 3 scrapers without parse tests (RentFaster,
-  Rentals.ca, Kijiji) — only Zumper + RentCanada have them; a saved sample blob + parse
-  test would trip a regression instead of silently dropping a source. (Pairs with the
-  health monitor: health catches the *site* changing, parse tests catch *our* code
-  regressing.)
+- ~~**Resilience pass**~~ — **done**: scraper health monitoring (`scrape_health` +
+  `services/health.py` + Settings display) **and** per-source parse-test fixtures (every
+  scraper now has a `test_<source>.py`). Health catches the *site* changing; parse tests
+  catch *our* code regressing.
 - ~~Cache `/api/places/autocomplete` responses~~ — **done** (`autocomplete_cache`, TTL 30d,
   result-aware). Still open: pass Places **session tokens** — but evaluated and **not
   worth it** for this app: Google only discounts a session that ends in a Place Details
