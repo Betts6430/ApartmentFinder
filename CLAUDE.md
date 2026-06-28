@@ -5,8 +5,8 @@ Context for Claude Code sessions on this project. Read this first.
 ## What this is
 
 A **personal-use, Edmonton-focused rental aggregator**. It scrapes RentFaster,
-Rentals.ca, Zumper, and Kijiji on demand, normalizes the listings, applies in-memory
-filters, ranks them three ways (Best Value / Best Location / Nicest Places), and
+Rentals.ca, Zumper, Kijiji, and RentCanada on demand, normalizes the listings, applies
+in-memory filters, ranks them three ways (Best Value / Best Location / Nicest Places), and
 optionally filters/ranks by **commute time** to a location (e.g. University of
 Alberta) via Google Maps.
 
@@ -70,11 +70,12 @@ app/
                      recipient), contact_cache, price_history, saved_searches (+ last_alerted_at)
   scrapers/
     base.py          Scraper ABC
-    __init__.py      SCRAPERS registry (RentFaster, RentalsCa, Zumper)
+    __init__.py      SCRAPERS registry (RentFaster, RentalsCa, Zumper, Kijiji, RentCanada)
     rentfaster.py    public map.json endpoint (structured JSON)
     rentals_ca.py    scrapes inline `App.store.search = {response: {...}}` JSON, paginates
     zumper.py        scrapes inline `window.__PRELOADED_STATE__` JSON, paginates
     kijiji.py        scrapes inline `__NEXT_DATA__` Apollo cache (RealEstateListing), paginates
+    rentcanada.py    scrapes inline `window.searchResult` JSON (?p=N), paginates; lazy detail-page phone
   services/
     search.py        run_search(): cache -> scrape -> filter -> transit enrich -> filter -> rank
     ranking.py       value/location/niceness scores + sort_listings()
@@ -108,23 +109,25 @@ run.sh, requirements.txt
   clears it; invalid email re-renders 400); 303 redirect to `/settings?saved=1`
 - `POST /api/settings/test-email` — send a test email to the saved recipient
   (`alerts.send_test_email`); returns `{"ok": true, "to": ...}` or `{"ok": false, "error": ...}`
-- `GET /api/listings/{id}/phone` — lazily resolve a listing's contact number (Zumper:
-  fetch its detail page) and return the rendered contact-panel HTML (or a link-out
-  fallback) to swap in. Result cached forever in `contact_cache` (misses too).
+- `GET /api/listings/{id}/phone` — lazily resolve a listing's contact number (Zumper
+  and RentCanada: fetch its detail page — dispatched by `main._DETAIL_PHONE_FETCHERS`)
+  and return the rendered contact-panel HTML (or a link-out fallback) to swap in.
+  Definitive results cached forever in `contact_cache` (misses too); transient failures
+  retried, not cached.
 - `GET /api/places/autocomplete?q=` — **backend proxy** to Places API (New) for the
   location autocomplete; returns `{"suggestions": [str, ...]}`. Key stays server-side.
 
 ## Key architecture decisions
 
 - **Single pool cache key.** The whole scraped Edmonton pool is cached under ONE
-  constant key (`edmonton:pool:v7`, see `SearchFilters.scrape_cache_key()`), NOT
+  constant key (`edmonton:pool:v8`, see `SearchFilters.scrape_cache_key()`), NOT
   per filter combo. Filters run in-memory against the cached pool. So only the
   first scrape is slow (~3–10s); later searches with different filters are <200ms.
   TTL = `SEARCH_CACHE_TTL_HOURS` (default 3h). **Bump the `vN` suffix whenever the
   shape/processing of the cached pool changes** (e.g. dedupe added at v2; proximity
   dedupe + sqft sanitizing at v3; `phone` field at v4; phone for Rentals.ca/Zumper
-  at v5; `phone_ext` field at v6; Kijiji source added at v7) so stale pools get
-  re-scraped instead of waiting out the TTL.
+  at v5; `phone_ext` field at v6; Kijiji source added at v7; RentCanada source added
+  at v8) so stale pools get re-scraped instead of waiting out the TTL.
 - **Cross-source dedupe.** The same posting often appears on multiple sites. After
   the per-`id` dedupe, `_scrape_all` collapses these via `_dedupe_cross_source`
   (`services/search.py`) **before caching**, so the cached pool is already clean.
@@ -152,25 +155,42 @@ run.sh, requirements.txt
   `pagination.totalCount`, so we fetch exactly ⌈total/40⌉ pages (capped at 45)
   concurrently. `_split_address` strips province/postal and keeps a street only when
   it contains a digit (private posters hide the street, leaving just "Edmonton, AB").
+- **RentCanada scraper quirks.** `rentcanada.py` reads the inline
+  `window.searchResult = {total, currentPage, listings:[...]}` JSON from the Edmonton
+  search page (~1400 listings). Decode gotchas, all in `_parse_listing`: one card is a
+  **property with min/max ranges**, so we take the minimum of each (`minRate` →price,
+  `minBeds`/`minBaths`/`minSqFt`), mirroring `rentals_ca.py`; **`active` is `False` on
+  every feed listing** (not a "live" flag — never filter on it); `description` is
+  **HTML** (stripped); amenity data is split across `amenities`/`utilities`/
+  `petPolicies`/`parkingPolicies`, each `[{name, value}]`, and we keyword-match the
+  kebab `value` slugs to the boolean flags (in-suite laundry matched *specifically* so
+  shared/building laundry doesn't count). Pagination is **`?p=N`** (NOT `?page=N`,
+  which the server ignores); page 1 carries `total`, so we fetch ⌈total/20⌉ pages
+  (capped at 75) concurrently. No phone in the feed — see Contact button.
 - **Contact button.** `scrapers/base.normalize_phone` parses a raw number into
   `(Listing.phone, Listing.phone_ext)` — a 10/11-digit NANP base plus any leftover
   digits as an extension, so call-center / property-manager numbers like
   "(844) 332-5934 ext. 4525" are kept (not dropped). **RentFaster** (~95%) and
   **Rentals.ca** (~30%, `node.contact.phoneNumber`) expose the number in their
-  search feed, so it's captured at scrape time. **Zumper** almost never includes it
-  in the feed — the number lives on the per-listing **detail page**, so it's
-  resolved **lazily on demand**: a Zumper listing shows the same **"Contact"** button
+  search feed, so it's captured at scrape time. **Zumper** and **RentCanada** almost never include
+  it in the feed — the number lives on the per-listing **detail page**, so it's
+  resolved **lazily on demand**: such a listing shows the same **"Contact"** button
   as the others (no implementation detail in the label), and its *first* click hits
-  `GET /api/listings/{id}/phone`, which fetches+parses the detail page and returns the
+  `GET /api/listings/{id}/phone`, which (dispatching on the listing's source via
+  `main._DETAIL_PHONE_FETCHERS`) fetches+parses the detail page and returns the
   rendered panel (or link-out) HTML to swap in (the shared JS shows a "Loading…" state
   meanwhile, then relabels to the standard Contact toggle). This keeps the bulk scrape fast and spends a request only on listings
   the user actually pursues (the *lazy on-click* choice over eager per-page /
-  bulk-on-scrape). **`_extract_detail_phone` checks several locations** — the number
+  bulk-on-scrape). For **Zumper**, **`_extract_detail_phone` checks several locations** — the number
   is usually at `detail.entity.data.listing_agents[].phone`, sometimes the older
   `agents[]`, sometimes only `crm_phone` (at `data` level or on
   `detail.activeListings[]`). (Reading *only* `agents[]` was the bug behind "the
   button only sometimes works" — most listings use `listing_agents`, so they looked
-  like "no number" and fell back to link-out.) **Caching is result-aware**
+  like "no number" and fell back to link-out.) For **RentCanada**, the detail page
+  embeds `window.pageData`; its `_extract_detail_phone` walks it for the first
+  non-null `pmPhone`, else the nested `contacts[].phone` (top-level copies are null).
+  Both sources' `fetch_listing_phone` share the same signature/contract, so they slot
+  into the dispatch map. **Caching is result-aware**
   (`fetch_listing_phone` returns `(fetched_ok, raw)`): a *definitive* outcome — a
   number, or a cleanly-parsed page with genuinely none — is cached forever in
   `contact_cache` (a miss as empty `phone`); a *transient* failure (timeout / a
@@ -351,7 +371,7 @@ stay off until `SMTP_HOST` + `ALERT_EMAIL_TO` are set (Gmail: App Password +
 
 ## Status (as of 2026-06-27)
 
-Working: all four scrapers (RentFaster, Rentals.ca, Zumper, Kijiji), pool caching, ranking, blank-field-tolerant search,
+Working: all five scrapers (RentFaster, Rentals.ca, Zumper, Kijiji, RentCanada), pool caching, ranking, blank-field-tolerant search,
 commute filter (geocode + Distance Matrix), location autocomplete, cross-source
 dedupe, paginated results with Grid/List/Map views (Map needs the **Maps JavaScript
 API** enabled — now on), the contact button, saved-listing
@@ -360,7 +380,18 @@ saved searches with new-match counts, and opt-in saved-search email alerts
 (SMTP + Settings-page recipient + test-email button). A `pytest` suite covers the
 pure logic — run with `./run_tests.sh`.
 
-This session (2026-06-27): enabled the Maps JS API for the map view; **saved-search
+This session (2026-06-27): added a **5th scraper, RentCanada** (`scrapers/rentcanada.py`):
+inline `window.searchResult` JSON, `?p=N` pagination driven by `total` (~1400 Edmonton
+listings), property min/max-range decode, HTML-stripped descriptions, amenity-slug →
+flag mapping (**v8 pool**). No phone in its feed, so its detail-page number
+(`window.pageData` → `pmPhone`/`contacts[].phone`) is resolved **lazily** behind the
+shared "Contact" button — the Zumper lazy-phone special-case was generalized into a
+`main._DETAIL_PHONE_FETCHERS` source→fetcher dispatch. Verified end-to-end (full
+pipeline: 5 scrapers → 5165 raw → 3341 after cross-source dedupe, **576 net RentCanada
+survivors**; HTTP phone endpoint returns a real number). 19 new unit tests
+(`tests/test_rentcanada.py`).
+
+Earlier this session (2026-06-27): enabled the Maps JS API for the map view; **saved-search
 email alerts** end-to-end (alerts.py, Settings page, test button, commute-aware
 matching shared with the in-app counts via `filter_and_enrich`); a **codebase-review
 pass** (geocode error handling; fixed transit `departure_time`; `first_seen`-based
@@ -401,9 +432,12 @@ a **"Send test email"** button (`/api/settings/test-email` → `alerts.send_test
 ### Possible next steps (not started)
 - Cache `/api/places/autocomplete` responses (currently every keystroke-after-debounce
   hits Google; cheap but not free).
-- More scrapers: Places4Students (U of A–relevant), liv.rent/RentSeeker/4rent (breadth).
-  Apartments.com / Zillow stay deferred (Cloudflare-hard; Zillow has ~no Canadian
-  rentals). Facebook Marketplace skipped (login + account-ban risk).
+- More scrapers: Places4Students (U of A–relevant; ~15-30 listings, data in a brittle
+  Next.js RSC stream), liv.rent (thin Edmonton inventory + RSC), RentSeeker (listings
+  load via a map XHR, not in the static HTML). ~~RentCanada~~ — **done** (v8, see above).
+  PadMapper was evaluated and skipped (Zumper-owned → redundant; its state isn't clean
+  JSON + its tile API 404s). Apartments.com / Zillow stay deferred (Cloudflare-hard;
+  Zillow has ~no Canadian rentals). Facebook Marketplace skipped (login + account-ban risk).
 - ~~Email alerts for saved-search new matches~~ — **done** (opt-in SMTP, see above).
   Still open: push/desktop notifications, and an HTML (vs plain-text) email template.
 - Consider Routes API migration only if legacy Distance Matrix gets sunset (mind the

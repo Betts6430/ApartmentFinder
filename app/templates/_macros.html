@@ -53,7 +53,7 @@
 {# Contact affordance, three cases (the first two look identical — a "Contact"
    button — to the user; they behave the same, just resolved eagerly vs lazily):
    - number known          → "Contact" button toggling the (already-rendered) panel.
-   - Zumper, number on detail page → "Contact" button; first click hits
+   - Zumper / RentCanada, number on detail page → "Contact" button; first click hits
      /api/listings/{id}/phone, which returns the panel (or a link-out) to swap in.
    - otherwise             → plain link-out. #}
 {% macro contact_block(l, align='left') %}
@@ -61,7 +61,7 @@
     {% if l.phone %}
       <button type="button" class="contact-toggle inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors" aria-expanded="false">Contact</button>
       {{ contact_panel(l.phone, l.phone_ext, l.price, l.address, l.source, l.source_url, hidden=True, align=align) }}
-    {% elif l.source == 'zumper' %}
+    {% elif l.source in ['zumper', 'rentcanada'] %}
       <button type="button" data-id="{{ l.id }}" data-align="{{ align }}" class="phone-fetch inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-60">Contact</button>
     {% else %}
       {{ contact_linkout(l.source, l.source_url) }}

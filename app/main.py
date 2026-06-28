@@ -16,7 +16,8 @@ from app import cache
 from app.config import settings
 from app.models import PropertyType, SearchFilters, SortBy
 from app.scrapers.base import normalize_phone
-from app.scrapers.zumper import fetch_listing_phone
+from app.scrapers.rentcanada import fetch_listing_phone as _rentcanada_fetch_phone
+from app.scrapers.zumper import fetch_listing_phone as _zumper_fetch_phone
 from app.services.search import filter_and_enrich, run_search
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -27,6 +28,14 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 # Listings rendered per results page (full ranked set is sliced server-side).
 PAGE_SIZE = 60
+
+# Sources whose contact number isn't in the search feed but on the per-listing
+# detail page — resolved lazily on the first "Contact" click. Each value is an async
+# fetcher(source_url) -> (fetched_ok, raw_phone); see app/main.py listing_phone.
+_DETAIL_PHONE_FETCHERS = {
+    "zumper": _zumper_fetch_phone,
+    "rentcanada": _rentcanada_fetch_phone,
+}
 
 
 @asynccontextmanager
@@ -261,22 +270,23 @@ async def toggle_favorite(id: str = Form(...)) -> JSONResponse:
 
 @app.get("/api/listings/{listing_id}/phone", response_class=HTMLResponse)
 async def listing_phone(listing_id: str, align: str = "left") -> HTMLResponse:
-    """Lazily resolve a listing's contact number (currently Zumper, whose number
-    lives on the per-listing detail page) and return the contact panel HTML to
-    swap in. A *definitive* result (number found, or a cleanly-fetched page with no
-    number) is cached forever so repeat clicks are instant. A *transient* failure
-    (timeout / Cloudflare block) is deliberately NOT cached, so a later click retries
-    instead of being stuck on link-out forever."""
+    """Lazily resolve a listing's contact number (for sources like Zumper and
+    RentCanada, whose number lives on the per-listing detail page) and return the
+    contact panel HTML to swap in. A *definitive* result (number found, or a
+    cleanly-fetched page with no number) is cached forever so repeat clicks are
+    instant. A *transient* failure (timeout / Cloudflare block) is deliberately NOT
+    cached, so a later click retries instead of being stuck on link-out forever."""
     found = await cache.get_listings([listing_id])
     if not found:
         return HTMLResponse("Listing not found", status_code=404)
     listing = found[0]
 
     cached = await cache.get_contact(listing_id)
+    fetcher = _DETAIL_PHONE_FETCHERS.get(listing.source)
     if cached is not None:
         phone, ext = cached
-    elif listing.source == "zumper":
-        ok, raw = await fetch_listing_phone(listing.source_url)
+    elif fetcher is not None:
+        ok, raw = await fetcher(listing.source_url)
         phone, ext = normalize_phone(raw)
         if ok:
             await cache.save_contact(listing_id, phone, ext)  # found or genuinely absent

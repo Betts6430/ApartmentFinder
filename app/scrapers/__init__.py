@@ -1,6 +1,7 @@
 from app.scrapers.base import Scraper
 from app.scrapers.kijiji import KijijiScraper
 from app.scrapers.rentals_ca import RentalsCaScraper
+from app.scrapers.rentcanada import RentCanadaScraper
 from app.scrapers.rentfaster import RentFasterScraper
 from app.scrapers.zumper import ZumperScraper
 
@@ -10,4 +11,5 @@ SCRAPERS: list[Scraper] = [
     RentalsCaScraper(),
     ZumperScraper(),
     KijijiScraper(),
+    RentCanadaScraper(),
 ]
