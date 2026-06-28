@@ -5,6 +5,7 @@ Tables (see `_SCHEMA`):
 - search_cache:  filter_hash -> listing IDs (logical TTL = SEARCH_CACHE_TTL_HOURS)
 - transit_cache: (o_lat,o_lng,d_lat,d_lng,mode) -> minutes (no TTL — commutes are stable)
 - geocode_cache / contact_cache: location & phone lookups (no TTL — they don't change)
+- autocomplete_cache: query prefix -> Places suggestions (TTL-pruned; suggestions can drift)
 - favorites:     saved-listing snapshots (kept until the user un-saves)
 - listing_seen / price_history / meta / saved_searches: new-badge, drop-tracking,
   key/value, and saved-search state.
@@ -52,6 +53,15 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
     lat REAL NOT NULL,
     lng REAL NOT NULL,
     formatted TEXT,
+    created_at TEXT NOT NULL
+);
+
+-- Places-autocomplete suggestions, keyed by the normalized query prefix, so repeat
+-- type-aheads of the same text don't re-bill Google. TTL-checked on read and pruned
+-- (unlike geocode, a prefix's suggestions can drift as places open/close).
+CREATE TABLE IF NOT EXISTS autocomplete_cache (
+    query_norm TEXT PRIMARY KEY,
+    suggestions TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 
@@ -142,11 +152,13 @@ async def prune(
     ph_cut = (now - timedelta(days=price_history_days)).isoformat()
     seen_cut = (now - timedelta(days=seen_days)).isoformat()
     sc_cut = (now - timedelta(hours=settings.search_cache_ttl_hours)).isoformat()
+    ac_cut = (now - timedelta(days=AUTOCOMPLETE_TTL_DAYS)).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM listings WHERE scraped_at < ?", (l_cut,))
         await db.execute("DELETE FROM price_history WHERE seen_at < ?", (ph_cut,))
         await db.execute("DELETE FROM listing_seen WHERE first_seen < ?", (seen_cut,))
         await db.execute("DELETE FROM search_cache WHERE created_at < ?", (sc_cut,))
+        await db.execute("DELETE FROM autocomplete_cache WHERE created_at < ?", (ac_cut,))
         await db.commit()
 
 
@@ -264,6 +276,43 @@ async def save_geocode(query: str, lat: float, lng: float, formatted: str = "") 
         await db.execute(
             "INSERT OR REPLACE INTO geocode_cache (query_norm, lat, lng, formatted, created_at) VALUES (?, ?, ?, ?, ?)",
             (qn, lat, lng, formatted, utcnow().isoformat()),
+        )
+        await db.commit()
+
+
+# Autocomplete suggestions go stale slowly; a month between refreshes keeps Google
+# calls down while still picking up new places eventually. Kept in sync with the
+# prune window so a row isn't deleted while still considered fresh on read.
+AUTOCOMPLETE_TTL_DAYS = 30
+
+
+async def get_cached_autocomplete(query: str) -> Optional[list[str]]:
+    """Cached Places-autocomplete suggestions for a query prefix, or None when absent
+    or older than AUTOCOMPLETE_TTL_DAYS. Keyed by the same normalization as geocode."""
+    qn = _norm_query(query)
+    cutoff = (utcnow() - timedelta(days=AUTOCOMPLETE_TTL_DAYS)).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT suggestions, created_at FROM autocomplete_cache WHERE query_norm = ?", (qn,)
+        ) as cursor:
+            row = await cursor.fetchone()
+    if row is None or row[1] < cutoff:
+        return None
+    try:
+        return json.loads(row[0])
+    except json.JSONDecodeError:
+        return None
+
+
+async def save_autocomplete(query: str, suggestions: list[str]) -> None:
+    """Cache a *successful* autocomplete response (an empty list is a valid result —
+    Google found no matches). Callers must NOT call this on a failed/blocked request,
+    or a transient error would be cached as a permanent empty result."""
+    qn = _norm_query(query)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO autocomplete_cache (query_norm, suggestions, created_at) VALUES (?, ?, ?)",
+            (qn, json.dumps(suggestions), utcnow().isoformat()),
         )
         await db.commit()
 

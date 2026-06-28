@@ -66,7 +66,8 @@ app/
   models.py          PropertyType/SortBy enums; SearchFilters + Listing models; Listing.matches();
                      normalize_address() + address field validator (one house style)
   cache.py           SQLite cache: listings, search_cache, transit_cache, geocode_cache,
-                     favorites, listing_seen, meta (get_meta/set_meta k/v; holds the alert
+                     autocomplete_cache (Places suggestions, TTL-pruned), favorites,
+                     listing_seen, meta (get_meta/set_meta k/v; holds the alert
                      recipient), contact_cache, price_history, saved_searches (+ last_alerted_at)
   scrapers/
     base.py          Scraper ABC
@@ -116,6 +117,9 @@ run.sh, requirements.txt
   retried, not cached.
 - `GET /api/places/autocomplete?q=` — **backend proxy** to Places API (New) for the
   location autocomplete; returns `{"suggestions": [str, ...]}`. Key stays server-side.
+  Successful responses are cached per normalized query in `autocomplete_cache`
+  (`AUTOCOMPLETE_TTL_DAYS`, default 30) so repeat type-aheads don't re-bill Google;
+  transient failures / non-2xx are left uncached (result-aware, like the contact cache).
 
 ## Key architecture decisions
 
@@ -389,7 +393,11 @@ shared "Contact" button — the Zumper lazy-phone special-case was generalized i
 `main._DETAIL_PHONE_FETCHERS` source→fetcher dispatch. Verified end-to-end (full
 pipeline: 5 scrapers → 5165 raw → 3341 after cross-source dedupe, **576 net RentCanada
 survivors**; HTTP phone endpoint returns a real number). 19 new unit tests
-(`tests/test_rentcanada.py`).
+(`tests/test_rentcanada.py`). Also added **autocomplete caching**: the
+`/api/places/autocomplete` proxy now serves repeat queries from a new
+`autocomplete_cache` table (normalized key, 30-day TTL + prune, result-aware so
+failures aren't cached) — a warm query returns in ~5ms with no Google call, vs ~360ms
+on a cache miss.
 
 Earlier this session (2026-06-27): enabled the Maps JS API for the map view; **saved-search
 email alerts** end-to-end (alerts.py, Settings page, test button, commute-aware
@@ -430,8 +438,9 @@ fresh scrape, `last_alerted_at` baseline, background `alert_poller`); **Settings
 a **"Send test email"** button (`/api/settings/test-email` → `alerts.send_test_email`).
 
 ### Possible next steps (not started)
-- Cache `/api/places/autocomplete` responses (currently every keystroke-after-debounce
-  hits Google; cheap but not free).
+- ~~Cache `/api/places/autocomplete` responses~~ — **done** (`autocomplete_cache`, TTL 30d,
+  result-aware). Still open: pass Places **session tokens** so Google bills a whole
+  type-ahead session as one unit (a separate billing lever from caching).
 - More scrapers: Places4Students (U of A–relevant; ~15-30 listings, data in a brittle
   Next.js RSC stream), liv.rent (thin Edmonton inventory + RSC), RentSeeker (listings
   load via a map XHR, not in the static HTML). ~~RentCanada~~ — **done** (v8, see above).

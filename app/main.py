@@ -126,10 +126,16 @@ _EDMONTON_BIAS = {
 @app.get("/api/places/autocomplete")
 async def places_autocomplete(q: str = "") -> JSONResponse:
     """Proxy to Places API (New) so the key stays server-side. Returns plain
-    suggestion strings; failures degrade to an empty list (the input still works)."""
+    suggestion strings; failures degrade to an empty list (the input still works).
+    A *successful* response is cached per normalized query, so repeat type-aheads of
+    the same text are served from SQLite instead of re-billing Google. A transient
+    failure / API error (non-2xx) is left uncached so a later try can still succeed."""
     q = q.strip()
     if len(q) < 3 or not settings.google_maps_api_key:
         return JSONResponse({"suggestions": []})
+    cached = await cache.get_cached_autocomplete(q)
+    if cached is not None:
+        return JSONResponse({"suggestions": cached})
     payload = {"input": q, "includedRegionCodes": ["ca"], "locationBias": _EDMONTON_BIAS}
     headers = {
         "X-Goog-Api-Key": settings.google_maps_api_key,
@@ -138,15 +144,17 @@ async def places_autocomplete(q: str = "") -> JSONResponse:
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
             r = await client.post(PLACES_AUTOCOMPLETE_URL, json=payload, headers=headers)
+        r.raise_for_status()
         data = r.json()
     except Exception as e:
         log.warning("places autocomplete failed: %s", e)
-        return JSONResponse({"suggestions": []})
+        return JSONResponse({"suggestions": []})  # transient — leave uncached
     suggestions = [
         s["placePrediction"]["text"]["text"]
         for s in data.get("suggestions", [])
         if s.get("placePrediction", {}).get("text", {}).get("text")
     ]
+    await cache.save_autocomplete(q, suggestions)
     return JSONResponse({"suggestions": suggestions})
 
 
