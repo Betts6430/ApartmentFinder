@@ -28,14 +28,21 @@ tier thanks to aggressive caching.
 
 ## How to run
 
+**Everyday use (no terminal):** the **"ApartmentFinder" Desktop icon** (Windows) starts
+the server and opens the browser; **"Stop ApartmentFinder"** shuts it down. Those icons
+run `app-launch.sh` (idempotent; uvicorn on **127.0.0.1:8000**, **no** `--reload`) via a
+hidden WSL call — see `windows/` and `windows/install.sh` to (re)create them.
+
+**Development:**
 ```bash
 ./run.sh          # activates .venv, runs uvicorn app.main:app on 0.0.0.0:8000 --reload
 ```
 
 Then open **http://localhost:8000**. Stop with `pkill -f "uvicorn app.main:app"`.
 
-`--reload` is on, so Python/template edits apply live. **`.env` changes are NOT
-watched** — restart the app to pick those up.
+`--reload` is on (dev only), so Python/template edits apply live. **`.env` changes are NOT
+watched** — restart the app to pick those up. (The Desktop launcher deliberately omits
+`--reload` — it's for *using* the app, not editing it — so restart it after code changes.)
 
 ## Tests
 
@@ -98,6 +105,9 @@ app/
                      _contact_panel.html (fragment returned by the lazy phone endpoint)
   static/            (empty; mounted at /static)
 data/cache.db        SQLite cache (gitignored)
+app-launch.sh        idempotent no-reload launcher used by the Windows desktop icon
+windows/             desktop-launcher assets: ApartmentFinder.vbs (start+open browser),
+                     Stop-ApartmentFinder.vbs, create-shortcuts.ps1, app.ico, install.sh
 run.sh, requirements.txt
 .env                 secrets (gitignored) — see below
 ```
@@ -195,6 +205,20 @@ run.sh, requirements.txt
   + status. Catches both total breakage (→0) and partial collapse (e.g. pagination
   breaks → a fraction of normal). Recorded even on an all-empty scrape, so total
   outage is captured too.
+- **Windows desktop launcher.** This runs under **WSL2** (Ubuntu) on Windows. To launch
+  without a terminal, a Desktop shortcut runs `windows/ApartmentFinder.vbs` (hidden) →
+  `wsl.exe -d Ubuntu bash -c "… && ./app-launch.sh"`, then polls `http://localhost:8000`
+  and opens the default browser. **`app-launch.sh` is idempotent** (skips if a uvicorn
+  is already up) and **`exec`s uvicorn in the foreground** so the hidden `wsl.exe` keeps
+  the WSL session — and thus the server — alive (backgrounding it would let WSL reap the
+  job when the launching shell exits). The stop shortcut `pkill`s it. Gotcha baked in:
+  the process-match pattern uses a **`[u]vicorn` bracket** so `pgrep`/`pkill -f` don't
+  match their *own* command line (a literal `uvicorn app.main:app` in argv self-matches —
+  it silently killed a test mid-run once). `windows/install.sh` copies the scripts +
+  `app.ico` (a generated "AF" icon matching the header logo) into
+  `%LOCALAPPDATA%\ApartmentFinder` and creates the Desktop `.lnk`s via PowerShell;
+  re-run it to recreate them. The shortcut is bound to **127.0.0.1** and **no `--reload`**
+  (using, not developing).
 - **Contact button.** `scrapers/base.normalize_phone` parses a raw number into
   `(Listing.phone, Listing.phone_ext)` — a 10/11-digit NANP base plus any leftover
   digits as an extension, so call-center / property-manager numbers like
@@ -430,6 +454,11 @@ verified live + a temp-DB chain test catching both →0 and partial-collapse bre
 Then completed the pass with **per-source parse-test fixtures** — RentFaster,
 Rentals.ca, and Kijiji each got a `test_<source>.py` (28 tests) so all 5 scrapers now
 have parse coverage (93 tests total). Build considered feature-complete for its job.
+Finally, **packaged it as a no-terminal app**: a Windows Desktop "ApartmentFinder" icon
+(+ "Stop") that boots the server in WSL (hidden) and opens the browser — `app-launch.sh`
++ `windows/` (.vbs launchers, generated `app.ico`, `install.sh`); verified cold-start +
+stop end-to-end (see the Windows-desktop-launcher decision above). Also tidied the
+Settings page into a responsive two-column card grid.
 
 Earlier this session (2026-06-27): enabled the Maps JS API for the map view; **saved-search
 email alerts** end-to-end (alerts.py, Settings page, test button, commute-aware

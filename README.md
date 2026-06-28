@@ -7,7 +7,8 @@ Edmonton-focused rental aggregator. Scrapes popular rental sites on demand, appl
 - Rentals.ca
 - Zumper
 - Kijiji
-- (planned) Apartments.com, Zillow
+- RentCanada
+- (deferred) Apartments.com, Zillow — Cloudflare-hard; Zillow has ~no Canadian rentals
 
 ## Features
 - Three rankings (Best Value / Best Location / Nicest Places) over a deduped, cross-source pool
@@ -17,6 +18,7 @@ Edmonton-focused rental aggregator. Scrapes popular rental sites on demand, appl
 - Saved listings (favorites) and saved searches with new-match counts
 - "New" listing badges and price-drop tracking
 - **Saved-search email alerts** — get emailed when a saved search gets new matches ([setup](#email-alerts-optional))
+- Per-source scraper-health monitoring on the Settings page (flags a source that silently breaks)
 
 ## Setup
 
@@ -30,6 +32,13 @@ cp .env.example .env
 ```
 
 Then open http://localhost:8000.
+
+### Run without a terminal (Windows desktop app)
+
+On Windows + WSL2 you can launch it like a normal app: a Desktop **"ApartmentFinder"**
+icon starts the server and opens your browser, and **"Stop ApartmentFinder"** shuts it
+down. Set the icons up once with `./windows/install.sh` — see
+[`windows/README.md`](windows/README.md).
 
 ### Google Maps API key
 
