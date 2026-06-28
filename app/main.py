@@ -15,9 +15,11 @@ from fastapi.templating import Jinja2Templates
 from app import cache
 from app.config import settings
 from app.models import PropertyType, SearchFilters, SortBy
+from app.scrapers import SCRAPERS
 from app.scrapers.base import normalize_phone
 from app.scrapers.rentcanada import fetch_listing_phone as _rentcanada_fetch_phone
 from app.scrapers.zumper import fetch_listing_phone as _zumper_fetch_phone
+from app.services import health
 from app.services.search import filter_and_enrich, run_search
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -431,12 +433,14 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 async def _settings_context(request: Request, **extra) -> dict:
+    histories = await cache.get_recent_scrape_counts()
     ctx = {
         "request": request,
         "email": await cache.get_meta(cache.ALERT_EMAIL_KEY) or "",
         "smtp_configured": settings.smtp_configured,
         "env_fallback": settings.alert_email_to,
         "poll_minutes": settings.alert_poll_minutes,
+        "scraper_health": health.health_report(histories, [s.name for s in SCRAPERS]),
     }
     ctx.update(extra)
     return ctx

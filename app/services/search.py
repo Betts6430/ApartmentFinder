@@ -12,7 +12,7 @@ from typing import Optional
 from app import cache
 from app.models import Listing, SearchFilters
 from app.scrapers import SCRAPERS
-from app.services import ranking, transit
+from app.services import health, ranking, transit
 
 log = logging.getLogger(__name__)
 
@@ -111,17 +111,21 @@ def _dedupe_cross_source(listings: list[Listing]) -> list[Listing]:
     return out
 
 
-async def _scrape_all(filters: SearchFilters) -> list[Listing]:
-    """Run every registered scraper in parallel, dedupe by listing id, then
-    collapse cross-site duplicates of the same posting."""
+async def _scrape_all(filters: SearchFilters) -> tuple[list[Listing], dict[str, int]]:
+    """Run every registered scraper in parallel, dedupe by listing id, then collapse
+    cross-site duplicates of the same posting. Also returns each source's raw listing
+    count (before dedupe; 0 if it errored) for health tracking."""
     results = await asyncio.gather(
         *(s.scrape(filters) for s in SCRAPERS), return_exceptions=True
     )
     listings: list[Listing] = []
+    counts: dict[str, int] = {}
     for scraper, result in zip(SCRAPERS, results):
         if isinstance(result, Exception):
             log.exception("scraper %s failed", scraper.name, exc_info=result)
+            counts[scraper.name] = 0
             continue
+        counts[scraper.name] = len(result)
         listings.extend(result)
     seen: dict[str, Listing] = {}
     for l in listings:
@@ -130,7 +134,19 @@ async def _scrape_all(filters: SearchFilters) -> list[Listing]:
     deduped = _dedupe_cross_source(unique)
     if len(deduped) < len(unique):
         log.info("cross-source dedupe: %d → %d listings", len(unique), len(deduped))
-    return deduped
+    return deduped, counts
+
+
+async def _warn_unhealthy_sources() -> None:
+    """Log a warning for any source whose latest scrape collapsed versus its own recent
+    norm — so silent breakage surfaces in the logs (also shown on the Settings page)."""
+    histories = await cache.get_recent_scrape_counts()
+    for item in health.health_report(histories, [s.name for s in SCRAPERS]):
+        if item["status"] == health.DOWN:
+            log.warning(
+                "scraper health: %s looks DOWN — latest scrape returned %s (recent norm ~%s)",
+                item["source"], item["latest"], item["baseline"],
+            )
 
 
 async def filter_and_enrich(
@@ -191,7 +207,11 @@ async def run_search(filters: SearchFilters) -> SearchResult:
     listings = await cache.get_cached_search(key)
     if listings is None:
         log.info("scrape-pool cache miss — running %d scrapers", len(SCRAPERS))
-        listings = await _scrape_all(filters)
+        listings, source_counts = await _scrape_all(filters)
+        # Record per-source counts + flag any source that collapsed vs its norm. Done
+        # unconditionally (even an all-empty scrape) so total breakage is captured too.
+        await cache.record_scrape_counts(source_counts)
+        await _warn_unhealthy_sources()
         if listings:
             await cache.save_search(key, listings)
             # Stamp first-seen / advance the scrape boundary for new-listing badges,

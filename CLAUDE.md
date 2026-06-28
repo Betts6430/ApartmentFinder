@@ -68,7 +68,8 @@ app/
   cache.py           SQLite cache: listings, search_cache, transit_cache, geocode_cache,
                      autocomplete_cache (Places suggestions, TTL-pruned), favorites,
                      listing_seen, meta (get_meta/set_meta k/v; holds the alert
-                     recipient), contact_cache, price_history, saved_searches (+ last_alerted_at)
+                     recipient), contact_cache, price_history, scrape_health (per-source
+                     counts), saved_searches (+ last_alerted_at)
   scrapers/
     base.py          Scraper ABC
     __init__.py      SCRAPERS registry (RentFaster, RentalsCa, Zumper, Kijiji, RentCanada)
@@ -82,6 +83,7 @@ app/
     ranking.py       value/location/niceness scores + sort_listings()
     transit.py       geocode() + compute_transit() (Google Maps)
     alerts.py        dispatch_alerts() emails new saved-search matches; alert_poller() background re-scrape
+    health.py        pure scraper-health eval (latest per-source count vs its recent norm)
   templates/         base.html (header + "Saved" nav + global delegated JS for hearts/contact/copy),
                      index.html (search form + autocomplete), results.html (Grid/List/Map views,
                      pagination + Save-search), favorites.html (saved listings),
@@ -105,7 +107,9 @@ run.sh, requirements.txt
 - `POST /api/searches` (form `name`, `filters` = SearchFilters JSON) — save a search
 - `GET /searches/{id}/open` — run a saved search (renders results.html) + mark viewed
 - `POST /searches/{id}/delete` — delete a saved search (303 redirect)
-- `GET /settings` — settings page (alert-recipient email + SMTP/poller status)
+- `GET /settings` — settings page (alert-recipient email + SMTP/poller status +
+  **per-source scraper health**: each scraper's last-scrape count, flagged if it
+  collapsed vs its recent norm)
 - `POST /settings` (form `alert_email`) — save the alert recipient to the DB (blank
   clears it; invalid email re-renders 400); 303 redirect to `/settings?saved=1`
 - `POST /api/settings/test-email` — send a test email to the saved recipient
@@ -171,6 +175,21 @@ run.sh, requirements.txt
   shared/building laundry doesn't count). Pagination is **`?p=N`** (NOT `?page=N`,
   which the server ignores); page 1 carries `total`, so we fetch ⌈total/20⌉ pages
   (capped at 75) concurrently. No phone in the feed — see Contact button.
+- **Scraper health monitoring.** A 5-source pool's worst failure is *silent*: a site
+  changes its markup, that scraper quietly returns ~0 listings, and the pool still
+  looks fine — you just stop seeing that source. On each fresh scrape, `_scrape_all`
+  returns the **raw per-source count** (before dedupe; 0 if it errored) and `run_search`
+  records it in `scrape_health` (one row per source per scrape, TTL-pruned). The pure
+  `services/health.evaluate_health` classifies a source from its recent counts
+  (newest-first): **down** if the latest is 0 or below 25% of the median of prior
+  scrapes, **ok** if healthy or too little history (< 3 priors) to judge, **unknown**
+  if never recorded. (Median-of-priors so one fluke scrape barely moves the baseline
+  and a recovered source clears immediately; per-source so RentFaster's ~500 and
+  Kijiji's ~1700 norms are judged independently.) `run_search` logs a warning for any
+  down source after a scrape, and the **Settings page** shows each source's last count
+  + status. Catches both total breakage (→0) and partial collapse (e.g. pagination
+  breaks → a fraction of normal). Recorded even on an all-empty scrape, so total
+  outage is captured too.
 - **Contact button.** `scrapers/base.normalize_phone` parses a raw number into
   `(Listing.phone, Listing.phone_ext)` — a 10/11-digit NANP base plus any leftover
   digits as an extension, so call-center / property-manager numbers like
@@ -380,8 +399,9 @@ commute filter (geocode + Distance Matrix), location autocomplete, cross-source
 dedupe, paginated results with Grid/List/Map views (Map needs the **Maps JavaScript
 API** enabled — now on), the contact button, saved-listing
 favorites, "New" listing badges, address normalization, price-drop tracking,
-saved searches with new-match counts, and opt-in saved-search email alerts
-(SMTP + Settings-page recipient + test-email button). A `pytest` suite covers the
+saved searches with new-match counts, opt-in saved-search email alerts
+(SMTP + Settings-page recipient + test-email button), and per-source scraper-health
+monitoring (Settings page). A `pytest` suite covers the
 pure logic — run with `./run_tests.sh`.
 
 This session (2026-06-27): added a **5th scraper, RentCanada** (`scrapers/rentcanada.py`):
@@ -397,7 +417,12 @@ survivors**; HTTP phone endpoint returns a real number). 19 new unit tests
 `/api/places/autocomplete` proxy now serves repeat queries from a new
 `autocomplete_cache` table (normalized key, 30-day TTL + prune, result-aware so
 failures aren't cached) — a warm query returns in ~5ms with no Google call, vs ~360ms
-on a cache miss.
+on a cache miss. And started a **resilience pass**: **scraper health monitoring** —
+`scrape_health` table + pure `services/health.py`, per-source counts recorded each
+scrape, a source flagged **down** when its latest count collapses vs its recent norm
+(median-based), logged on scrape + shown on the Settings page (10 new unit tests;
+verified live + a temp-DB chain test catching both →0 and partial-collapse breakage).
+Still open in the pass: parse-test fixtures for the 3 scrapers without them.
 
 Earlier this session (2026-06-27): enabled the Maps JS API for the map view; **saved-search
 email alerts** end-to-end (alerts.py, Settings page, test button, commute-aware
@@ -438,9 +463,19 @@ fresh scrape, `last_alerted_at` baseline, background `alert_poller`); **Settings
 a **"Send test email"** button (`/api/settings/test-email` → `alerts.send_test_email`).
 
 ### Possible next steps (not started)
+- **Resilience pass** (in progress): ~~scraper health monitoring~~ — **done**
+  (`scrape_health` + `services/health.py` + Settings display, see above). Still open:
+  **parse-test fixtures** for the 3 scrapers without parse tests (RentFaster,
+  Rentals.ca, Kijiji) — only Zumper + RentCanada have them; a saved sample blob + parse
+  test would trip a regression instead of silently dropping a source. (Pairs with the
+  health monitor: health catches the *site* changing, parse tests catch *our* code
+  regressing.)
 - ~~Cache `/api/places/autocomplete` responses~~ — **done** (`autocomplete_cache`, TTL 30d,
-  result-aware). Still open: pass Places **session tokens** so Google bills a whole
-  type-ahead session as one unit (a separate billing lever from caching).
+  result-aware). Still open: pass Places **session tokens** — but evaluated and **not
+  worth it** for this app: Google only discounts a session that ends in a Place Details
+  request, which we don't make (we fill a text box and geocode separately), so tokens
+  would collapse to per-request billing anyway. Revisit only if location-picking moves
+  onto Place Details for other reasons.
 - More scrapers: Places4Students (U of A–relevant; ~15-30 listings, data in a brittle
   Next.js RSC stream), liv.rent (thin Edmonton inventory + RSC), RentSeeker (listings
   load via a map XHR, not in the static HTML). ~~RentCanada~~ — **done** (v8, see above).

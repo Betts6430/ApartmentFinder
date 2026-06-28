@@ -9,6 +9,8 @@ Tables (see `_SCHEMA`):
 - favorites:     saved-listing snapshots (kept until the user un-saves)
 - listing_seen / price_history / meta / saved_searches: new-badge, drop-tracking,
   key/value, and saved-search state.
+- scrape_health: per-source listing counts per scrape, for detecting a source that
+  silently breaks (returns ~0 while the rest keep working). TTL-pruned.
 
 `prune()` (run at startup) drops aged-out rows so the file doesn't grow forever;
 the no-TTL caches above are intentionally left alone.
@@ -104,6 +106,15 @@ CREATE TABLE IF NOT EXISTS price_history (
 );
 CREATE INDEX IF NOT EXISTS idx_price_history_id ON price_history(id);
 
+-- Per-source raw listing count for each scrape (before dedupe), so a source that
+-- silently breaks (markup changed -> 0 listings) can be flagged against its norm.
+CREATE TABLE IF NOT EXISTS scrape_health (
+    source TEXT NOT NULL,
+    count INTEGER NOT NULL,
+    scraped_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scrape_health_source ON scrape_health(source, scraped_at);
+
 -- Saved searches: a named SearchFilters snapshot. `last_viewed_at` anchors the
 -- "new matches since you last looked" count.
 CREATE TABLE IF NOT EXISTS saved_searches (
@@ -139,7 +150,8 @@ async def init_db() -> None:
 
 
 async def prune(
-    listings_days: int = 7, price_history_days: int = 90, seen_days: int = 120
+    listings_days: int = 7, price_history_days: int = 90, seen_days: int = 120,
+    health_days: int = 60,
 ) -> None:
     """Drop aged-out rows so the DB file doesn't grow without bound.
 
@@ -153,12 +165,14 @@ async def prune(
     seen_cut = (now - timedelta(days=seen_days)).isoformat()
     sc_cut = (now - timedelta(hours=settings.search_cache_ttl_hours)).isoformat()
     ac_cut = (now - timedelta(days=AUTOCOMPLETE_TTL_DAYS)).isoformat()
+    health_cut = (now - timedelta(days=health_days)).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM listings WHERE scraped_at < ?", (l_cut,))
         await db.execute("DELETE FROM price_history WHERE seen_at < ?", (ph_cut,))
         await db.execute("DELETE FROM listing_seen WHERE first_seen < ?", (seen_cut,))
         await db.execute("DELETE FROM search_cache WHERE created_at < ?", (sc_cut,))
         await db.execute("DELETE FROM autocomplete_cache WHERE created_at < ?", (ac_cut,))
+        await db.execute("DELETE FROM scrape_health WHERE scraped_at < ?", (health_cut,))
         await db.commit()
 
 
@@ -534,6 +548,40 @@ async def get_price_drops(ids: list[str], within_days: int = 30) -> dict[str, fl
                     cur_price, cur_seen, prev_price = pts[0][1], pts[0][2], pts[1][1]
                     if cur_seen >= cutoff and prev_price > cur_price:
                         out[lid] = prev_price
+    return out
+
+
+# --- Scraper health ----------------------------------------------------------
+
+async def record_scrape_counts(counts: dict[str, int]) -> None:
+    """Record how many raw listings each source returned in a scrape (before dedupe).
+    One row per source per scrape; powers the per-source health check. Recorded even
+    when a source returned 0 — that's exactly the case we want to catch."""
+    if not counts:
+        return
+    now = utcnow().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executemany(
+            "INSERT INTO scrape_health (source, count, scraped_at) VALUES (?, ?, ?)",
+            [(s, int(c), now) for s, c in counts.items()],
+        )
+        await db.commit()
+
+
+async def get_recent_scrape_counts(per_source: int = 12) -> dict[str, list[tuple[int, str]]]:
+    """For each source seen, its most recent scrape counts newest-first as
+    (count, scraped_at). Feeds `services.health` to judge latest-vs-norm."""
+    out: dict[str, list[tuple[int, str]]] = {}
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT DISTINCT source FROM scrape_health") as cur:
+            sources = [r[0] for r in await cur.fetchall()]
+        for s in sources:
+            async with db.execute(
+                "SELECT count, scraped_at FROM scrape_health WHERE source = ? "
+                "ORDER BY scraped_at DESC LIMIT ?",
+                (s, per_source),
+            ) as cur:
+                out[s] = [(r[0], r[1]) for r in await cur.fetchall()]
     return out
 
 
